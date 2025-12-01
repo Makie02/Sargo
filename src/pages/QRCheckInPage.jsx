@@ -164,7 +164,19 @@ export default function QRCheckInPage() {
     }
   };
 
+const [isProcessing, setIsProcessing] = useState(false);
+const scanTimeoutRef = useRef(null);
+
 const onScanSuccess = (decodedText) => {
+    // STOP AGAD SCANNER + CHECK IF PROCESSING PA
+    if (isProcessing) {
+      console.log("⏳ STILL PROCESSING - IGNORING SCAN");
+      return;
+    }
+    
+    stopScanner();
+    setIsProcessing(true);
+    
     const cleanedText = decodedText.trim();
     console.log("======================");
     console.log("📱 RAW QR SCANNED:", cleanedText);
@@ -203,6 +215,13 @@ const onScanSuccess = (decodedText) => {
       console.log("🔍 SEARCHING FOR:", reservationNumber);
       console.log("======================");
       handleSearch(reservationNumber);
+      
+      // DELAY 2 SECONDS BAGO PWEDE ULIT MAG-SCAN
+      scanTimeoutRef.current = setTimeout(() => {
+        setIsProcessing(false);
+        console.log("✅ READY TO SCAN AGAIN");
+      }, 2000);
+      
     } else {
       console.log("❌ ERROR: No reservation number to search!");
       Swal.fire({
@@ -211,11 +230,20 @@ const onScanSuccess = (decodedText) => {
         html: `<p>Cannot find reservation number in QR code.</p>
                <p class="text-sm mt-2">Scanned: <code>${cleanedText}</code></p>`,
         confirmButtonColor: '#3085d6'
+      }).then(() => {
+        setIsProcessing(false);
       });
     }
-    
-    stopScanner();
+};
+
+// CLEANUP TIMEOUT PAG UNMOUNT
+useEffect(() => {
+  return () => {
+    if (scanTimeoutRef.current) {
+      clearTimeout(scanTimeoutRef.current);
+    }
   };
+}, []);
   const onScanError = (error) => {
     // Silent - normal scanning errors
   };
