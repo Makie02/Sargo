@@ -164,14 +164,29 @@ export default function QRCheckInPage() {
     }
   };
 
-  const onScanSuccess = (decodedText) => {
+const onScanSuccess = (decodedText) => {
     // Clean and trim the decoded text
     const cleanedText = decodedText.trim();
     console.log("QR Code Scanned:", cleanedText);
+    
+    // Try to parse as JSON first (if QR contains JSON with reservationNo)
+    try {
+      const parsed = JSON.parse(cleanedText);
+      if (parsed.reservationNo) {
+        console.log("Parsed JSON - Reservation No:", parsed.reservationNo);
+        handleSearch(parsed.reservationNo);
+        stopScanner();
+        return;
+      }
+    } catch (e) {
+      // Not JSON, treat as plain text
+      console.log("Plain text QR code");
+    }
+    
+    // If not JSON or no reservationNo field, search as-is
     handleSearch(cleanedText);
     stopScanner();
   };
-
   const onScanError = (error) => {
     // Silent - normal scanning errors
   };
