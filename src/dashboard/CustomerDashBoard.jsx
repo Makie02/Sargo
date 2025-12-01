@@ -94,40 +94,65 @@ const checkDateAvailability = async (tableId, date) => {
   }
 
   const activeSchedule = schedules[0];
-  const openTime = activeSchedule.OpenTime;
-  const closeTime = activeSchedule.CloseTime;
+  
+  // Parse TIME format properly
+  const parseTime = (timeString) => {
+    if (!timeString) return { hour: 0, minute: 0 };
+    const [hour, minute] = timeString.split(':');
+    return { 
+      hour: parseInt(hour), 
+      minute: parseInt(minute) 
+    };
+  };
 
-  // Check each hour in the schedule
-  for (let hour = openTime; hour <= closeTime; hour++) {
-    const period = hour >= 12 ? 'PM' : 'AM';
-    const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-    const timeString = `${displayHour}:00 ${period}`;
+  const openTime = parseTime(activeSchedule.OpenTime);
+  const closeTime = parseTime(activeSchedule.CloseTime);
+
+  // Check 30-minute intervals
+  let currentHour = openTime.hour;
+  let currentMinute = openTime.minute;
+  
+  while (currentHour < closeTime.hour || (currentHour === closeTime.hour && currentMinute < closeTime.minute)) {
+    const period = currentHour >= 12 ? 'PM' : 'AM';
+    const displayHour = currentHour === 0 ? 12 : currentHour > 12 ? currentHour - 12 : currentHour;
+    const timeString = `${displayHour}:${String(currentMinute).padStart(2, '0')} ${period}`;
+    const dbTime = `${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}:00`;
     
     const today = getTodayDate();
     if (date === today && isTimeInPast(timeString, date)) {
+      currentMinute += 30;
+      if (currentMinute >= 60) {
+        currentMinute = 0;
+        currentHour += 1;
+      }
       continue;
     }
 
     try {
-      // ✅ CRITICAL FIX: This RPC function checks ALL reservations in database
-      // It doesn't filter by account_id, so it will show all booked times
       const { data: isAvailable, error } = await supabase
         .rpc('is_table_available', {
           p_table_id: tableId,
           p_reservation_date: date,
-          p_start_time: timeString,
-          p_duration_hours: 1
+          p_start_time: dbTime,
+          p_duration_hours: 0.5
         });
       
       if (!error && isAvailable) {
-        return true; // Found at least one available time
+        return true;
       }
     } catch (err) {
       console.error('Error checking availability:', err);
     }
+    
+    // Move to next 30-minute interval
+    currentMinute += 30;
+    if (currentMinute >= 60) {
+      currentMinute = 0;
+      currentHour += 1;
+    }
   }
 
-  return false; // No available times found
+  return false;
 };
 const preloadUnavailableDates = async (tableId) => {
   const unavailableDatesList = [];
@@ -183,7 +208,10 @@ const isDateClosed = (date) => {
 const getDayNameFromDate = (dateString) => {
   if (!dateString) return null;
   
-  const date = new Date(dateString);
+  // Parse the date string properly to avoid timezone issues
+  const [year, month, day] = dateString.split('-');
+  const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+  
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   return days[date.getDay()];
 };
@@ -196,14 +224,19 @@ const isTimeInPast = (selectedTime, date) => {
   
   const now = new Date();
   const currentHours = now.getHours();
+  const currentMinutes = now.getMinutes();
   
   const [time, period] = selectedTime.split(' ');
-  let [hours] = time.split(':').map(Number);
+  let [hours, minutes] = time.split(':').map(Number);
   
   if (period === 'PM' && hours !== 12) hours += 12;
   if (period === 'AM' && hours === 12) hours = 0;
   
-  return hours <= currentHours;
+  // Compare both hours and minutes
+  if (hours < currentHours) return true;
+  if (hours === currentHours && minutes <= currentMinutes) return true;
+  
+  return false;
 };
  const getMaxAvailableDuration = async (tableId, date, startTime) => {
   if (!date || !startTime) return 0;
@@ -218,34 +251,90 @@ const isTimeInPast = (selectedTime, date) => {
   if (schedules.length === 0) return 0;
 
   const activeSchedule = schedules[0];
-  const closeTime = activeSchedule.CloseTime;
+  
+  const parseTime = (timeString) => {
+    if (!timeString) return { hour: 0, minute: 0 };
+    const [hour, minute] = timeString.split(':');
+    return { 
+      hour: parseInt(hour), 
+      minute: parseInt(minute) 
+    };
+  };
 
-  // Parse start time
+  const closeTime = parseTime(activeSchedule.CloseTime);
+
   const [time, period] = startTime.split(' ');
-  let [hours] = time.split(':').map(Number);
+  let [hours, minutes] = time.split(':').map(Number);
   
   if (period === 'PM' && hours !== 12) hours += 12;
   if (period === 'AM' && hours === 12) hours = 0;
 
-  // Calculate hours until close
-  const hoursUntilClose = closeTime - hours;
+  const startTimeInHours = hours + (minutes / 60);
+  const closeTimeInHours = closeTime.hour + (closeTime.minute / 60);
+  const maxPossibleHours = closeTimeInHours - startTimeInHours;
 
-  // Check consecutive available hours
+  // ✅ Get existing reservations that come AFTER this start time
+  const dbTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+  
+  const { data: nextReservations, error: resError } = await supabase
+    .from('reservation')
+    .select('start_time')
+    .eq('table_id', tableId)
+    .eq('reservation_date', date)
+    .not('status', 'in', '(cancelled,completed)')
+    .gt('start_time', dbTime)
+    .order('start_time', { ascending: true })
+    .limit(1);
+
+  if (resError) {
+    console.error('Error fetching next reservation:', resError);
+  }
+
+  // ✅ Calculate time until next reservation (if exists)
+  let maxHoursUntilNextReservation = maxPossibleHours;
+  
+  if (nextReservations && nextReservations.length > 0) {
+    const nextResTime = nextReservations[0].start_time;
+    const [nextHour, nextMinute] = nextResTime.split(':').map(Number);
+    const nextTimeInHours = nextHour + (nextMinute / 60);
+    
+    // ✅ Ensure at least 1 hour gap before next reservation
+    const availableHours = nextTimeInHours - startTimeInHours - 1; // -1 for mandatory gap
+    maxHoursUntilNextReservation = Math.max(0, availableHours);
+  }
+
+  // Use the smaller of: closing time or next reservation
+  const finalMaxHours = Math.min(maxPossibleHours, maxHoursUntilNextReservation);
+
+  const sortedDurations = [...durations].sort((a, b) => a.hours - b.hours);
+
   let maxDuration = 0;
-  for (let duration = 1; duration <= hoursUntilClose; duration++) {
+  for (const duration of sortedDurations) {
+    if (duration.hours > finalMaxHours) {
+      break;
+    }
+
     try {
+      const dbTimeFormatted = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+
       const { data: isAvailable, error } = await supabase
         .rpc('is_table_available', {
           p_table_id: tableId,
           p_reservation_date: date,
-          p_start_time: startTime,
-          p_duration_hours: duration
+          p_start_time: dbTimeFormatted,
+          p_duration_hours: duration.hours
         });
       
-      if (!error && isAvailable) {
-        maxDuration = duration;
+      if (error) {
+        console.error('RPC Error:', error);
+        maxDuration = duration.hours;
+        continue;
+      }
+      
+      if (isAvailable === true) {
+        maxDuration = duration.hours;
       } else {
-        break; // Stop at first unavailable duration
+        break;
       }
     } catch (err) {
       console.error('Error checking duration:', err);
@@ -260,14 +349,12 @@ const getAvailableTimes = async (tableId, date) => {
     return [];
   }
 
-  // Check if date is closed
   if (isDateClosed(date)) {
     return [];
   }
 
   const dayName = getDayNameFromDate(date);
   
-  // Get active schedule for that day
   const schedules = timeDates.filter(td => 
     td.Date === dayName && 
     td.Actions === 'Active' && 
@@ -279,31 +366,109 @@ const getAvailableTimes = async (tableId, date) => {
   }
 
   const activeSchedule = schedules[0];
-  const openTime = activeSchedule.OpenTime;
-  const closeTime = activeSchedule.CloseTime;
+  
+  const parseTime = (timeString) => {
+    if (!timeString) return { hour: 0, minute: 0 };
+    const [hour, minute] = timeString.split(':');
+    return { 
+      hour: parseInt(hour), 
+      minute: parseInt(minute) 
+    };
+  };
 
-  // Generate all time slots first
-  const timeSlots = [];
+  const openTime = parseTime(activeSchedule.OpenTime);
+  const closeTime = parseTime(activeSchedule.CloseTime);
+
   const today = getTodayDate();
   
-for (let hour = openTime; hour < closeTime; hour++) {
-    const period = hour >= 12 ? 'PM' : 'AM';
-    const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-    const timeString = `${displayHour}:00 ${period}`;
+  // Get all existing reservations
+  const { data: existingReservations, error: reservationError } = await supabase
+    .from('reservation')
+    .select('start_time, time_end')
+    .eq('table_id', tableId)
+    .eq('reservation_date', date)
+    .not('status', 'in', '(cancelled,completed)')
+    .order('start_time', { ascending: true });
+
+  if (reservationError) {
+    console.error('Error checking existing reservations:', reservationError);
+  }
+
+  const reservations = existingReservations || [];
+
+  const timeToMinutes = (timeStr) => {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+
+  const timeSlots = [];
+  let currentHour = openTime.hour;
+  let currentMinute = openTime.minute;
+  
+  const hasExistingReservations = reservations.length > 0;
+  let useHourlyIntervals = !hasExistingReservations;
+
+  while (currentHour < closeTime.hour || (currentHour === closeTime.hour && currentMinute < closeTime.minute)) {
+    const period = currentHour >= 12 ? 'PM' : 'AM';
+    const displayHour = currentHour === 0 ? 12 : currentHour > 12 ? currentHour - 12 : currentHour;
+    const timeString = `${displayHour}:${String(currentMinute).padStart(2, '0')} ${period}`;
+    const dbTime = `${String(currentHour).padStart(2, '0')}:${String(currentMinute).padStart(2, '0')}:00`;
     
-    // Check if time is in the past
     const isPast = date === today && isTimeInPast(timeString, date);
+    
+    // Check if this time would create a gap < 1 hour
+    let createsGap = false;
+    const slotMinutes = timeToMinutes(dbTime);
+    
+    for (const reservation of reservations) {
+      const resEndMinutes = timeToMinutes(reservation.time_end);
+      const gap = slotMinutes - resEndMinutes;
+      
+      if (gap > 0 && gap < 60) {
+        createsGap = true;
+        break;
+      }
+    }
     
     timeSlots.push({
       time: timeString,
-      isPast: isPast
+      dbTime: dbTime,
+      isPast: isPast,
+      createsGap: createsGap
     });
+    
+    if (useHourlyIntervals) {
+      currentHour += 1;
+      useHourlyIntervals = false;
+    } else {
+      currentMinute += 30;
+      if (currentMinute >= 60) {
+        currentMinute = 0;
+        currentHour += 1;
+      }
+    }
+    
+    if (currentHour > closeTime.hour || (currentHour === closeTime.hour && currentMinute >= closeTime.minute)) {
+      break;
+    }
   }
 
-  // Check ALL time slots in PARALLEL using Promise.all
   const availabilityChecks = timeSlots.map(async (slot) => {
     if (slot.isPast) {
-      return { ...slot, available: false };
+      return { 
+        time: slot.time, 
+        available: false,
+        createsGap: false
+      };
+    }
+    
+    // ✅ If it creates a gap, mark as "available: false" but keep createsGap flag
+    if (slot.createsGap) {
+      return {
+        time: slot.time,
+        available: false,
+        createsGap: true
+      };
     }
     
     try {
@@ -311,21 +476,34 @@ for (let hour = openTime; hour < closeTime; hour++) {
         .rpc('is_table_available', {
           p_table_id: tableId,
           p_reservation_date: date,
-          p_start_time: slot.time,
-          p_duration_hours: 1
+          p_start_time: slot.dbTime,
+          p_duration_hours: 0.5
         });
+      
+      if (error) {
+        console.error('RPC Error:', error);
+        return { 
+          time: slot.time, 
+          available: true,
+          createsGap: false
+        };
+      }
       
       return {
         time: slot.time,
-        available: !error && isAvailable
+        available: isAvailable === true,
+        createsGap: false
       };
     } catch (err) {
       console.error('Error checking availability:', err);
-      return { time: slot.time, available: false };
+      return { 
+        time: slot.time, 
+        available: true,
+        createsGap: false
+      };
     }
   });
 
-  // Wait for ALL checks to complete at the same time
   const results = await Promise.all(availabilityChecks);
   
   return results;
@@ -380,6 +558,9 @@ const fetchData = async () => {
     setTableInfos(infosData || []);
     setDurations(durationsData || []);
     setTimeDates(timeDatesData || []);
+    console.log('📅 TimeDate Data:', timeDatesData);
+    console.log('📅 Schedules (no CloseDay):', timeDatesData.filter(td => !td.CloseDay));
+    console.log('📅 Active Schedules:', timeDatesData.filter(td => !td.CloseDay && td.Actions === 'Active'));
     setTypes(typesData || []); // ADD THIS
     
   } catch (error) {
@@ -408,7 +589,6 @@ const handleTableSelect = async (table, info) => {
       delete newData[table.table_id];
       return newData;
     });
-    // ADD THIS:
     setMaxDurations(prev => {
       const newData = { ...prev };
       delete newData[table.table_id];
@@ -425,20 +605,7 @@ const handleTableSelect = async (table, info) => {
       }
     }));
     
-    // Show loading indicator
-    Swal.fire({
-      title: 'Loading available dates...',
-      text: 'Please wait',
-      allowOutsideClick: false,
-      didOpen: () => {
-        Swal.showLoading();
-      }
-    });
-    
-    // Preload unavailable dates
-    await preloadUnavailableDates(table.table_id);
-    
-    Swal.close();
+    // REMOVED: Preloading - let filterDate handle it on-demand
   }
 };
 
@@ -492,7 +659,6 @@ const handleReservation = async () => {
     return;
   }
 
-  // Validate each table has date and time
   const incompleteTables = [];
   for (const table of selectedTables) {
     const formData = tableFormData[table.table_id];
@@ -516,7 +682,6 @@ const handleReservation = async () => {
   try {
     const reservationsData = [];
 
-    // Process each table
     for (const table of selectedTables) {
       const formData = tableFormData[table.table_id];
       
@@ -540,10 +705,13 @@ const handleReservation = async () => {
 
       const selectedDuration = durations.find(d => d.id === parseInt(formData.duration));
       
+      // 🔥 CONVERT time string to HH:MM:SS format for database
+      const startTimeFormatted = formData.time; 
+
       // Calculate end time
       const { data: endTimeData, error: endTimeError } = await supabase
         .rpc('calculate_end_time', {
-          p_start_time: formData.time,
+          p_start_time: startTimeFormatted,
           p_duration_hours: selectedDuration.hours
         });
 
@@ -554,7 +722,7 @@ const handleReservation = async () => {
         .rpc('is_table_available', {
           p_table_id: table.table_id,
           p_reservation_date: formData.date,
-          p_start_time: formData.time,
+          p_start_time: startTimeFormatted,
           p_duration_hours: selectedDuration.hours
         });
 
@@ -577,20 +745,15 @@ const handleReservation = async () => {
       reservationsData.push({
         table: table,
         date: formData.date,
-        time: formData.time,
-        timeEnd: endTimeData,
+        time: startTimeFormatted,  // 🔥 Use formatted time
+        timeEnd: endTimeData,       // 🔥 This is already in TIME format from RPC
         duration: selectedDuration,
         billiard_type: table.info.billiard_type
       });
     }
 
-    // ✅ NO RESERVATION NO GENERATION HERE ANYMORE
-    // Payment.js will handle it using the RPC function
-
-    // If all validations pass, prepare for payment
     setReservationData({
       reservations: reservationsData
-      // ❌ REMOVE: reservationNo: reservationNo
     });
     setShowPayment(true);
 
@@ -807,7 +970,7 @@ if (showPayment) {
                 minDate={new Date()}
                 dateFormat="dd/MM/yyyy"
                 placeholderText="Select a date"
-            filterDate={(date) => {
+filterDate={(date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
@@ -818,28 +981,29 @@ if (showPayment) {
     return false;
   }
   
-  // Check if date has no available times for this table
-  const tableUnavailableDates = unavailableDates[table.table_id] || [];
-  if (tableUnavailableDates.includes(dateString)) {
-    return false;
+  // ✅ Check if timeDates is loaded
+  if (timeDates.length === 0) {
+    return true; // Show all dates if data not loaded yet
   }
   
-  return true;
+  // Get day name and check if there's an active schedule
+  const dayName = getDayNameFromDate(dateString);
+  const hasSchedule = timeDates.some(td => 
+    td.Date === dayName && 
+    td.Actions === 'Active' && 
+    !td.CloseDay
+  );
+  
+  return hasSchedule;
 }}
-             dayClassName={(date) => {
+     dayClassName={(date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const dateString = `${year}-${month}-${day}`;
   
-  // Check if closed day
+  // ✅ Only mark closed days as blocked
   if (isDateClosed(dateString)) {
-    return 'blocked-date';
-  }
-  
-  // Check if no available times
-  const tableUnavailableDates = unavailableDates[table.table_id] || [];
-  if (tableUnavailableDates.includes(dateString)) {
     return 'blocked-date';
   }
   
@@ -853,6 +1017,7 @@ if (showPayment) {
             </div>
 
 {/* Time */}
+{/* Time */}
 <div>
   <label style={{
     display: 'block',
@@ -865,7 +1030,41 @@ if (showPayment) {
   </label>
   <select
     value={formData.time}
-    onChange={(e) => handleTableFormChange(table.table_id, 'time', e.target.value)}
+    onChange={(e) => {
+      const selectedTime = e.target.value;
+      const timeObj = availableTimes.find(t => t.time === selectedTime);
+      
+      // ✅ Check if this time creates a gap
+      if (timeObj && timeObj.createsGap) {
+        Swal.fire({
+          icon: 'warning',
+          title: 'Time Slot Not Available',
+          html: `
+            <p><strong>${selectedTime}</strong> cannot be booked.</p>
+            <p>This time would create a gap of less than 1 hour with an existing reservation.</p>
+            <p>Please select a different time slot.</p>
+          `,
+          confirmButtonColor: '#28a745',
+          confirmButtonText: 'OK'
+        });
+        return; // Don't update the form
+      }
+      
+      // ✅ Check if reserved
+      if (timeObj && !timeObj.available) {
+        Swal.fire({
+          icon: 'error',
+          title: 'Time Already Reserved',
+          text: `${selectedTime} is already booked. Please select another time.`,
+          confirmButtonColor: '#dc3545',
+          confirmButtonText: 'OK'
+        });
+        return; // Don't update the form
+      }
+      
+      // ✅ If available, proceed
+      handleTableFormChange(table.table_id, 'time', selectedTime);
+    }}
     disabled={!formData.date || isDateClosed(formData.date) || availableTimes.length === 0}
     style={{
       width: '100%',
@@ -888,20 +1087,34 @@ if (showPayment) {
         : 'Select time'
       }
     </option>
-    {availableTimes.map(timeObj => (
-      <option 
-        key={timeObj.time} 
-        value={timeObj.time}
-        disabled={!timeObj.available}
-        style={{
-          backgroundColor: timeObj.available ? 'white' : '#ffebee',
-          color: timeObj.available ? '#333' : '#dc3545',
-          fontWeight: timeObj.available ? 'normal' : '600'
-        }}
-      >
-        {timeObj.time} {!timeObj.available ? '(Reserved)' : ''}
-      </option>
-    ))}
+    {availableTimes.map(timeObj => {
+      const isReserved = !timeObj.available && !timeObj.createsGap;
+      const createsGap = timeObj.createsGap;
+      
+      return (
+        <option 
+          key={timeObj.time} 
+          value={timeObj.time}
+          style={{
+            backgroundColor: isReserved 
+              ? '#ffebee' 
+              : createsGap 
+              ? '#fff3cd' 
+              : 'white',
+            color: isReserved 
+              ? '#dc3545' 
+              : createsGap 
+              ? '#856404' 
+              : '#333',
+            fontWeight: (isReserved || createsGap) ? '600' : 'normal'
+          }}
+        >
+          {timeObj.time} 
+          {isReserved ? ' (Reserved)' : ''}
+          {createsGap ? ' (Gap Issue)' : ''}
+        </option>
+      );
+    })}
   </select>
 </div>
 
@@ -935,16 +1148,31 @@ if (showPayment) {
     <option value="">
       {!formData.time ? 'Select time first' : 'Select duration'}
     </option>
-    {durations
-      .filter(duration => {
-        const maxDuration = maxDurations[table.table_id] || 0;
-        return duration.hours <= maxDuration;
-      })
-      .map(duration => (
-        <option key={duration.id} value={duration.id}>
-          {duration.hours} hour{duration.hours > 1 ? 's' : ''}
-        </option>
-      ))}
+{durations
+  .filter(duration => {
+    const maxDuration = maxDurations[table.table_id] || 0;
+    return duration.hours <= maxDuration;
+  })
+  .map(duration => {
+    // Format the display text
+    const hours = Math.floor(duration.hours);
+    const minutes = (duration.hours % 1) * 60;
+    
+    let displayText = '';
+    if (hours > 0) {
+      displayText += `${hours} hour${hours > 1 ? 's' : ''}`;
+    }
+    if (minutes > 0) {
+      if (hours > 0) displayText += ' ';
+      displayText += `${minutes} mins`;
+    }
+    
+    return (
+      <option key={duration.id} value={duration.id}>
+        {displayText}
+      </option>
+    );
+  })}
   </select>
   {formData.time && maxDurations[table.table_id] && (
     <p style={{
@@ -1022,22 +1250,35 @@ if (showPayment) {
           </div>
 
           {/* Table Image Container */}
-          <div style={{
-            height: '200px',
-            backgroundColor: '#f8f9fa',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderBottom: '1px solid #e9ecef'
-          }}>
-            <span style={{
-              color: '#adb5bd',
-              fontSize: '14px',
-              fontWeight: '500'
-            }}>
-              Table Image
-            </span>
-          </div>
+        <div style={{
+  height: '200px',
+  backgroundColor: '#f8f9fa',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderBottom: '1px solid #e9ecef',
+  overflow: 'hidden'
+}}>
+  {table.table_image ? (
+    <img 
+      src={table.table_image} 
+      alt={table.table_name}
+      style={{
+        width: '100%',
+        height: '100%',
+        objectFit: 'cover'
+      }}
+    />
+  ) : (
+    <span style={{
+      color: '#adb5bd',
+      fontSize: '14px',
+      fontWeight: '500'
+    }}>
+      No Image Available
+    </span>
+  )}
+</div>
 
           {/* Table Info */}
           <div style={{
@@ -1102,54 +1343,54 @@ if (showPayment) {
   </div>
 </div>
         {/* Footer - Reserve Button */}
-        <div style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          backgroundColor: '#5a5a5a',
-          padding: '20px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          boxShadow: '0 -2px 10px rgba(0,0,0,0.1)',
-          zIndex: 100
-        }}>
-          <p style={{
-            margin: 0,
-            color: 'white',
-            fontSize: '16px',
-            fontWeight: '600'
-          }}>
-            {selectedTables.length === 0 ? 'No tables selected' : `${selectedTables.length} table(s) selected`}
-          </p>
-<button
-  onClick={handleReservation}
-  disabled={selectedTables.length === 0}
-  style={{
-    padding: '12px 40px',
-    backgroundColor: '#28a745',
+       <div style={{
+  position: 'fixed',
+  bottom: 0,
+  left: '255px', 
+  right: 0,
+  backgroundColor: '#5a5a5a',
+  padding: '20px',
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  boxShadow: '0 -2px 10px rgba(0,0,0,0.1)',
+  zIndex: 100
+}}>
+  <p style={{
+    margin: 0,
     color: 'white',
-    border: 'none',
-    borderRadius: '8px',
     fontSize: '16px',
-    fontWeight: '700',
-    cursor: selectedTables.length > 0 ? 'pointer' : 'not-allowed',
-    opacity: selectedTables.length > 0 ? 1 : 0.5,
-    transition: 'all 0.2s'
-  }}
-  onMouseEnter={e => {
-    if (selectedTables.length > 0) {
-      e.currentTarget.style.backgroundColor = '#218838';
-    }
-  }}
-  onMouseLeave={e => {
-    e.currentTarget.style.backgroundColor = '#28a745';
-  }}
->
-  Next →
-</button>
-        </div>
+    fontWeight: '600'
+  }}>
+    {selectedTables.length === 0 ? 'No tables selected' : `${selectedTables.length} table(s) selected`}
+  </p>
+  <button
+    onClick={handleReservation}
+    disabled={selectedTables.length === 0}
+    style={{
+      padding: '12px 40px',
+      backgroundColor: '#28a745',
+      color: 'white',
+      border: 'none',
+      borderRadius: '8px',
+      fontSize: '16px',
+      fontWeight: '700',
+      cursor: selectedTables.length > 0 ? 'pointer' : 'not-allowed',
+      opacity: selectedTables.length > 0 ? 1 : 0.5,
+      transition: 'all 0.2s'
+    }}
+    onMouseEnter={e => {
+      if (selectedTables.length > 0) {
+        e.currentTarget.style.backgroundColor = '#218838';
+      }
+    }}
+    onMouseLeave={e => {
+      e.currentTarget.style.backgroundColor = '#28a745';
+    }}
+  >
+    Next →
+  </button>
+</div>
       </div>
 
  <style>
