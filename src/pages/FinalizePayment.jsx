@@ -4,6 +4,9 @@ import { supabase } from '../lib/supabaseClient';
 import Swal from 'sweetalert2';
 
 export default function FinalizePayment() {
+  // ============================================
+  // ALL STATES AT THE TOP - COMPLETE LIST
+  // ============================================
   const [activePayments, setActivePayments] = useState([]);
   const [pendingPayments, setPendingPayments] = useState([]);
   const [completedPayments, setCompletedPayments] = useState([]);
@@ -16,12 +19,18 @@ export default function FinalizePayment() {
   const [showExtensionModal, setShowExtensionModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [selectedExtension, setSelectedExtension] = useState('');
+  const [combinedData, setCombinedData] = useState([]);
+  
+  // SYNC PAYMENT STATES - MUST BE HERE
+  const [syncing, setSyncing] = useState(false);
+  const [referenceNumber, setReferenceNumber] = useState('');
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncedPayments, setSyncedPayments] = useState([]);
 
   useEffect(() => {
     fetchPayments();
     fetchExtensions();
   }, []);
-
   const fetchExtensions = async () => {
     try {
       const { data, error } = await supabase
@@ -45,68 +54,106 @@ export default function FinalizePayment() {
   const getAvailableExtensions = (billiardType) => {
     return extensions.filter(ext => ext.billiard_type === billiardType);
   };
+const handleCancelReservation = async (reservationId) => {
+  const result = await Swal.fire({
+    title: 'Cancel Reservation?',
+    text: 'Are you sure you want to cancel this reservation?',
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonColor: '#dc3545',
+    cancelButtonColor: '#6c757d',
+    confirmButtonText: 'Yes, cancel it!'
+  });
 
-  const fetchPayments = async () => {
-    setLoading(true);
+  if (result.isConfirmed) {
     try {
-      const { data: reservationData, error: reservationError } = await supabase
+      const { error } = await supabase
         .from('reservation')
-        .select('*')
-        .in('status', ['ongoing', 'approved', 'completed'])
-        .order('reservation_date', { ascending: false })
-        .order('start_time', { ascending: true });
+        .update({ status: 'cancelled' })
+        .eq('id', reservationId);
 
-      if (reservationError) throw reservationError;
+      if (error) throw error;
 
-   // Fetch accounts
-const { data: accountsData, error: accountsError } = await supabase
-  .from('accounts')
-  .select('account_id, email'); // remove nested customer
+      await Swal.fire({
+        icon: 'success',
+        title: 'Cancelled!',
+        text: 'The reservation has been cancelled.',
+        timer: 1500,
+        showConfirmButton: false,
+      });
 
-// Fetch customers separately
-const { data: customersData, error: customersError } = await supabase
-  .from('customer')
-  .select('customer_id, account_id, first_name, last_name, middle_name');
-
-if (accountsError) throw accountsError;
-if (customersError) throw customersError;
-
-// Join manually
-const combinedData = reservationData.map(reservation => {
-  const account = accountsData.find(acc => acc.account_id === reservation.account_id);
-  const customer = customersData.find(c => c.account_id === reservation.account_id);
-  return {
-    ...reservation,
-    accounts: {
-      ...account,
-      customer: customer || null
-    }
-  };
-});
-
-
-      const active = combinedData.filter(r => r.status === 'ongoing');
-      const pending = combinedData.filter(r => r.status === 'approved');
-      const completed = combinedData.filter(r => r.status === 'completed');
-
-      setActivePayments(active);
-      setPendingPayments(pending);
-      setCompletedPayments(completed);
-
-      // CHECK SYNCED PAYMENTS - DAGDAG TO!
-      const { data: syncedData } = await supabase
-        .from('payment')
-        .select('reservation_id');
-
-      setSyncedPayments(syncedData?.map(p => p.reservation_id) || []);
-
+      fetchPayments();
     } catch (error) {
-      // ... error handling
-    } finally {
-      setLoading(false);
+      console.error('Error cancelling reservation:', error);
+      await Swal.fire({
+        icon: 'error',
+        title: 'Error',
+        text: 'Failed to cancel reservation',
+      });
     }
-  };
+  }
+};
 
+const fetchPayments = async () => {
+  setLoading(true);
+  try {
+    const { data: reservationData, error: reservationError } = await supabase
+      .from('reservation')
+      .select('*')
+      .in('status', ['ongoing', 'approved', 'completed'])
+      .order('reservation_date', { ascending: false })
+      .order('start_time', { ascending: true });
+
+    if (reservationError) throw reservationError;
+
+    // Fetch accounts
+    const { data: accountsData, error: accountsError } = await supabase
+      .from('accounts')
+      .select('account_id, email');
+
+    // Fetch customers separately
+    const { data: customersData, error: customersError } = await supabase
+      .from('customer')
+      .select('customer_id, account_id, first_name, last_name, middle_name');
+
+    if (accountsError) throw accountsError;
+    if (customersError) throw customersError;
+
+    // Join manually
+    const combinedData = reservationData.map(reservation => {
+      const account = accountsData.find(acc => acc.account_id === reservation.account_id);
+      const customer = customersData.find(c => c.account_id === reservation.account_id);
+      return {
+        ...reservation,
+        accounts: {
+          ...account,
+          customer: customer || null
+        }
+      };
+    });
+
+    // ✅ START HERE - NO useState CALLS!
+    const active = combinedData.filter(r => r.status === 'ongoing');
+    const pending = combinedData.filter(r => r.status === 'approved');
+    const completed = combinedData.filter(r => r.status === 'completed');
+
+    setActivePayments(active);
+    setPendingPayments(pending);
+    setCompletedPayments(completed);
+
+    // CHECK SYNCED PAYMENTS
+    const { data: syncedData } = await supabase
+      .from('payment')
+      .select('reservation_id');
+
+    setSyncedPayments(syncedData?.map(p => p.reservation_id) || []);
+
+  } catch (error) {
+    // ... error handling
+  } finally {
+    setLoading(false);
+  }
+};
   const handleRefresh = async () => {
     setRefreshing(true);
     await fetchPayments();
@@ -570,170 +617,201 @@ const handleEndSession = async (id) => {
   };
 
   // 1. States FIRST
-  const [syncing, setSyncing] = useState(false);
-  const [referenceNumber, setReferenceNumber] = useState('');
-  const [showSyncModal, setShowSyncModal] = useState(false);
-  const [syncedPayments, setSyncedPayments] = useState([]); // DAPAT NANDITO NA!
-
+const formatDateForDisplay = (dateString) => {
+  if (!dateString) return 'N/A';
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+};
   // 2. TANGGALIN MUNA YUNG isSynced dito, ilagay sa loob ng map
-  const handleSyncPayment = async (payment) => {
-    setSelectedPayment(payment);
-    setReferenceNumber('');
+const handleSyncPayment = async (payment) => {
+  setSelectedPayment(payment);
+  setReferenceNumber('');
+  
+  try {
+    const { data: existingPayment } = await supabase
+      .from('payment')
+      .select('payment_id')
+      .eq('reservation_id', payment.id)
+      .maybeSingle();
 
-    // CHECK MUNA IF SYNCED NA
-    try {
-      const { data: existingPayment } = await supabase
-        .from('payment')
-        .select('payment_id')
-        .eq('reservation_id', payment.id)
-        .maybeSingle();
-
-      if (existingPayment) {
-        // SHOW ALERT TAPOS RETURN
-        await Swal.fire({
-          icon: 'info',
-          title: 'Already Synced',
-          text: 'This payment has already been synced to the payment table.',
-          confirmButtonColor: '#3b82f6'
-        });
-        return; // HINDI NA MAGBUBUKAS NG MODAL
-      }
-    } catch (error) {
-      console.error('Error checking sync status:', error);
-    }
-
-    // KUNG WALA PA, OPEN MODAL
-    setShowSyncModal(true);
-  };
-
-  const handleSyncSubmit = async () => {
-    if (!referenceNumber.trim()) {
+    if (existingPayment) {
       await Swal.fire({
-        icon: 'warning',
-        title: 'Reference Number Required',
-        text: 'Please enter a reference number.',
-        confirmButtonColor: '#f59e0b'
+        icon: 'info',
+        title: 'Already Synced',
+        text: 'This payment has already been synced to the payment table.',
+        confirmButtonColor: '#3b82f6'
       });
       return;
     }
-
-    setSyncing(true);
-
-    try {
-      // Check if already synced - USE maybeSingle()
-      const { data: existingPayment, error: checkError } = await supabase
-        .from('payment')
-        .select('payment_id')
-        .eq('reservation_id', selectedPayment.id)
-        .maybeSingle();
-
-      if (existingPayment) {
-        await Swal.fire({
-          icon: 'info',
-          title: 'Already Synced',
-          text: 'This payment has already been synced to the payment table.',
-          confirmButtonColor: '#3b82f6'
-        });
-        setSyncing(false);
-        setShowSyncModal(false);
-        return;
-      }
-
-      // Validate payment method
-      let paymentMethod = (selectedPayment.paymentMethod || 'cash').toLowerCase();
-      const validMethods = ['cash', 'gcash', 'card', 'online'];
-      if (!validMethods.includes(paymentMethod)) {
-        paymentMethod = 'cash';
-      }
-
-      let totalAmount = 0;
-
-      if (selectedPayment.payment_type === 'Full Payment') {
-        totalAmount = selectedPayment.full_amount || selectedPayment.total_bill || 0;
-      } else if (selectedPayment.payment_type === 'Half Payment') {
-        totalAmount = selectedPayment.half_amount || 0;
-      } else if (selectedPayment.payment_type === 'Partial Payment') {
-        totalAmount = selectedPayment.partial_amount || 0;
-      }
-
-      // Log data before insert
-      console.log('Inserting payment:', {
-        reservation_id: selectedPayment.id,
-        amount: totalAmount,
-        method: paymentMethod,
-        reference_number: referenceNumber.trim(),
-        status: 'completed'
-      });
-
-      const { data, error } = await supabase
-        .from('payment')
-        .insert({
-          reservation_id: selectedPayment.id,
-          account_id: selectedPayment.account_id, // DAGDAG TO!
-          amount: totalAmount,
-          method: paymentMethod,
-          payment_date: new Date().toISOString(),
-          reference_number: referenceNumber.trim(),
-          status: 'completed'
-        })
-        .select();
-
-      if (error) {
-        console.error('Insert Error:', error);
-        throw error;
-      }
-
-      console.log('Payment synced successfully:', data);
-
-      await Swal.fire({
-        icon: 'success',
-        title: 'Payment Synced!',
-        text: 'Payment data has been successfully transferred.',
-        timer: 2000,
-        showConfirmButton: false
-      });
-
-      setShowSyncModal(false);
-      setSelectedPayment(null);
-      setReferenceNumber('');
-    } catch (error) {
-      console.error('Error syncing payment:', error);
-      await Swal.fire({
-        icon: 'error',
-        title: 'Sync Failed',
-        html: `<p>${error.message || 'Failed to sync payment data.'}</p><small>${error.details || ''}</small>`,
-        confirmButtonColor: '#ef4444'
-      });
-    } finally {
-      setSyncing(false);
-    }
-  };
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-4 border-indigo-500 border-t-transparent mx-auto mb-4"></div>
-          <p className="text-gray-700 font-semibold text-lg">Loading payment data...</p>
-        </div>
-      </div>
-    );
+  } catch (error) {
+    console.error('Error checking sync status:', error);
   }
 
+  setShowSyncModal(true);
+};
+
+const handleSyncSubmit = async () => {
+  if (!referenceNumber.trim()) {
+    await Swal.fire({
+      icon: 'warning',
+      title: 'Reference Number Required',
+      text: 'Please enter a reference number.',
+      confirmButtonColor: '#f59e0b'
+    });
+    return;
+  }
+
+  setSyncing(true);
+  try {
+    // Check if already synced
+    const { data: existingPayment } = await supabase
+      .from('payment')
+      .select('payment_id')
+      .eq('reservation_id', selectedPayment.id)
+      .maybeSingle();
+
+    if (existingPayment) {
+      await Swal.fire({
+        icon: 'info',
+        title: 'Already Synced',
+        text: 'This payment has already been synced to the payment table.',
+        confirmButtonColor: '#3b82f6'
+      });
+      setSyncing(false);
+      setShowSyncModal(false);
+      return;
+    }
+
+    // Calculate the total amount paid
+    let totalAmountPaid = 0;
+    
+    if (selectedPayment.payment_type === 'Full Payment') {
+      totalAmountPaid = selectedPayment.full_amount || selectedPayment.total_bill || 0;
+    } else if (selectedPayment.payment_type === 'Half Payment') {
+      totalAmountPaid = selectedPayment.half_amount || 0;
+    } else if (selectedPayment.payment_type === 'Partial Payment') {
+      totalAmountPaid = selectedPayment.partial_amount || 0;
+    }
+
+    // Validate payment method
+    let paymentMethod = (selectedPayment.payment_method || 'cash').toLowerCase();
+    const validMethods = ['cash', 'gcash', 'card', 'online'];
+    if (!validMethods.includes(paymentMethod)) {
+      paymentMethod = 'cash';
+    }
+
+    // Get data from reservation table
+    const reservationDate = selectedPayment.reservation_date;
+    const startTime = selectedPayment.start_time;
+    const endTime = selectedPayment.time_end;
+    const duration = selectedPayment.duration;
+    const extension = selectedPayment.extension || 0;
+
+    // Prepare payment data
+    const paymentData = {
+      reservation_id: selectedPayment.id,
+      account_id: selectedPayment.account_id,
+      amount: totalAmountPaid,
+      total_bill: selectedPayment.total_bill,
+      method: paymentMethod,
+      payment_date: new Date().toISOString(),
+      reference_number: referenceNumber.trim(),
+      status: 'completed',
+      payment_type: selectedPayment.payment_type,
+      table_id: selectedPayment.table_id,
+      billiard_type: selectedPayment.billiard_type,
+      reservation_date: reservationDate,
+      start_time: startTime,
+      time_end: endTime,
+      duration: duration,
+      extension: extension
+    };
+
+    console.log('Syncing payment data:', paymentData);
+
+    // Insert into payment table
+    const { data, error } = await supabase
+      .from('payment')
+      .insert([paymentData])
+      .select();
+
+    if (error) {
+      console.error('Insert Error:', error);
+      throw error;
+    }
+
+    console.log('Payment synced successfully:', data);
+
+    // Update reservation as synced
+    await supabase
+      .from('reservation')
+      .update({ synced_to_payment: true })
+      .eq('id', selectedPayment.id);
+
+    // Success notification
+    await Swal.fire({
+      icon: 'success',
+      title: 'Payment Synced!',
+      html: `
+        <div style="text-align: left; font-size: 14px;">
+          <p><strong>Date:</strong> ${formatDateForDisplay(reservationDate)}</p>
+          <p><strong>Time:</strong> ${startTime} - ${endTime}</p>
+          <p><strong>Duration:</strong> ${duration} hours</p>
+          ${extension > 0 ? `<p><strong>Extension:</strong> ${extension} hours</p>` : ''}
+          <p style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e5e7eb;">
+            <strong>Amount Paid:</strong> ₱${totalAmountPaid}
+          </p>
+          <p><strong>Total Bill:</strong> ₱${selectedPayment.total_bill || 0}</p>
+          <p style="margin-top: 10px; color: ${totalAmountPaid >= selectedPayment.total_bill ? '#10b981' : '#f59e0b'};">
+            ${totalAmountPaid >= selectedPayment.total_bill ? '✅ Fully Paid' : '⚠️ Partial Payment'}
+          </p>
+          <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
+            Reference: ${referenceNumber.trim()}
+          </p>
+        </div>
+      `,
+      timer: 2500,
+      showConfirmButton: false
+    });
+
+    setShowSyncModal(false);
+    setSelectedPayment(null);
+    setReferenceNumber('');
+    fetchPayments();
+
+  } catch (error) {
+    console.error('Error syncing payment:', error);
+    await Swal.fire({
+      icon: 'error',
+      title: 'Sync Failed',
+      html: `
+        <div style="text-align: left;">
+          <p>${error.message || 'Failed to sync payment data.'}</p>
+          ${error.details ? `<p style="margin-top: 10px; font-size: 12px; color: #6b7280;">${error.details}</p>` : ''}
+        </div>
+      `,
+      confirmButtonColor: '#ef4444'
+    });
+  } finally {
+    setSyncing(false);
+  }
+};
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 p-6">
+    <div className="min-h-screen p-6 bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
       <div className="mb-8">
-        <div className="flex justify-between items-start mb-2">
+        <div className="flex items-start justify-between mb-2">
           <div>
-            <h1 className="text-4xl font-bold text-gray-900 mb-2 flex items-center gap-3">
+            <h1 className="flex items-center gap-3 mb-2 text-4xl font-bold text-gray-900">
               <CreditCard className="text-indigo-600" size={36} />
               Finalize Payment
             </h1>
-            <p className="text-gray-600 text-lg">Manage current sessions and process final payments</p>
+            <p className="text-lg text-gray-600">Manage current sessions and process final payments</p>
           </div>
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl hover:from-indigo-600 hover:to-purple-600 transition-all font-semibold shadow-lg disabled:opacity-50"
+            className="flex items-center gap-2 px-5 py-3 font-semibold text-white transition-all shadow-lg bg-gradient-to-r from-indigo-500 to-purple-500 rounded-xl hover:from-indigo-600 hover:to-purple-600 disabled:opacity-50"
           >
             <RefreshCw size={20} className={refreshing ? 'animate-spin' : ''} />
             Refresh
@@ -741,16 +819,16 @@ const handleEndSession = async (id) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Pending Payments */}
-        <div className="bg-white rounded-2xl shadow-xl p-6 border-2 border-orange-100">
+        <div className="p-6 bg-white border-2 border-orange-100 shadow-xl rounded-2xl">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 bg-gradient-to-br from-orange-400 to-amber-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-gradient-to-br from-orange-400 to-amber-500 rounded-xl">
               <DollarSign className="text-white" size={24} />
             </div>
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Pending</h2>
-              <p className="text-sm text-gray-600">{pendingPayments.length} awaiting</p>
+              <p className="text-sm text-gray-600">{pendingPayments.length} pending</p>
             </div>
           </div>
 
@@ -761,14 +839,14 @@ const handleEndSession = async (id) => {
                 const extensionPrice = payment.extension ? getExtensionPrice(payment.billiard_type, payment.extension) : 0;
 
                 return (
-                  <div key={payment.id} className="bg-gradient-to-r from-orange-50 to-amber-50 rounded-xl p-5 border-2 border-orange-200 hover:shadow-lg transition-all">
+                  <div key={payment.id} className="p-5 transition-all border-2 border-orange-200 bg-gradient-to-r from-orange-50 to-amber-50 rounded-xl hover:shadow-lg">
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-amber-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
+                        <div className="flex items-center justify-center w-12 h-12 text-lg font-bold text-white rounded-full bg-gradient-to-br from-orange-500 to-amber-600">
                           {customerName.charAt(0)}
                         </div>
                         <div>
-                          <h3 className="font-bold text-gray-900 text-lg">{customerName}</h3>
+                          <h3 className="text-lg font-bold text-gray-900">{customerName}</h3>
                           <p className="text-sm text-gray-600">Table {payment.table_id}</p>
                         </div>
                       </div>
@@ -777,42 +855,57 @@ const handleEndSession = async (id) => {
                       </span>
                     </div>
 
-                    <div className="space-y-1 mb-3">
-                      <p className="text-sm text-gray-700">
-                        <span className="font-semibold">Duration:</span> {payment.duration} hours
-                      </p>
-                      {payment.extension > 0 && (
-                        <div className="flex items-center gap-2 bg-blue-50 p-2 rounded-lg border border-blue-200">
-                          <Plus size={14} className="text-blue-600" />
-                          <span className="text-sm text-blue-800 font-semibold">
-                            Extension: {payment.extension}h - ₱{extensionPrice}
-                          </span>
-                        </div>
-                      )}
-                      <p className="text-sm text-gray-700">
-                        <span className="font-semibold">Amount:</span> ₱{payment.total_bill || 0}
-                      </p>
-                    </div>
+                 <div className="mb-3 space-y-1">
+  <p className="text-sm text-gray-700">
+    <span className="font-semibold">Date:</span> {formatDate(payment.reservation_date)}
+  </p>
+  <p className="text-sm text-gray-700">
+  <span className="font-semibold">Time:</span> {formatTime(payment.start_time)} - {formatTime(payment.time_end)}
+  </p>
+  <p className="text-sm text-gray-700">
+    <span className="font-semibold">Duration:</span> {payment.duration} hours
+  </p>
+  {payment.extension > 0 && (
+    <div className="flex items-center gap-2 p-2 border border-blue-200 rounded-lg bg-blue-50">
+      <Plus size={14} className="text-blue-600" />
+      <span className="text-sm font-semibold text-blue-800">
+        Extension: {payment.extension}h - ₱{extensionPrice}
+      </span>
+    </div>
+  )}
+  <p className="text-sm text-gray-700">
+    <span className="font-semibold">Amount:</span> ₱{payment.total_bill || 0}
+  </p>
+</div>
 
-                    <div className="grid grid-cols-2 gap-2 mb-2">
+                <div className="grid grid-cols-2 gap-2 mb-2">
                       <button
                         onClick={() => handleViewDetails(payment)}
-                        className="px-3 py-2 bg-white border-2 border-orange-300 text-orange-700 rounded-lg hover:bg-orange-50 transition-all font-semibold text-sm flex items-center justify-center gap-2"
+                        className="flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-orange-700 transition-all bg-white border-2 border-orange-300 rounded-lg hover:bg-orange-50"
                       >
                         <Eye size={16} />
                         View
                       </button>
                       <button
                         onClick={() => handleExtensionClick(payment)}
-                        className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all font-semibold text-sm flex items-center justify-center gap-2"
+                        className="flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-white transition-all bg-blue-500 rounded-lg hover:bg-blue-600"
                       >
                         <Plus size={16} />
                         Extend
                       </button>
                     </div>
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <button
+                        onClick={() => handleCancelReservation(payment.id)}
+                        className="px-4 py-2 text-sm font-semibold text-white transition-all bg-red-500 rounded-lg shadow-md hover:bg-red-600"
+                      >
+                        Cancel
+                      </button>
+                   
+                    </div>
                     <button
                       onClick={() => handleConfirmPaymentClick(payment)}
-                      className="w-full px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition-all font-semibold text-sm shadow-md"
+                      className="w-full px-4 py-2 text-sm font-semibold text-white transition-all rounded-lg shadow-md bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600"
                     >
                       Confirm Payment
                     </button>
@@ -820,18 +913,18 @@ const handleEndSession = async (id) => {
                 );
               })
             ) : (
-              <div className="text-center py-12">
-                <CheckCircle size={48} className="text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500 font-semibold">No pending payments</p>
+              <div className="py-12 text-center">
+                <CheckCircle size={48} className="mx-auto mb-3 text-gray-300" />
+                <p className="font-semibold text-gray-500">No pending payments</p>
               </div>
             )}
           </div>
         </div>
 
         {/* Currently Playing */}
-        <div className="bg-white rounded-2xl shadow-xl p-6 border-2 border-green-100">
+        <div className="p-6 bg-white border-2 border-green-100 shadow-xl rounded-2xl">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 bg-gradient-to-br from-green-400 to-emerald-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-gradient-to-br from-green-400 to-emerald-500 rounded-xl">
               <Clock className="text-white" size={24} />
             </div>
             <div>
@@ -848,56 +941,101 @@ const handleEndSession = async (id) => {
                 const extensionPrice = payment.extension ? getExtensionPrice(payment.billiard_type, payment.extension) : 0;
 
                 return (
-                  <div key={payment.id} className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-5 border-2 border-green-200 hover:shadow-lg transition-all">
+                  <div key={payment.id} className="p-5 transition-all border-2 border-green-200 bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl hover:shadow-lg">
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
+                        <div className="flex items-center justify-center w-12 h-12 text-lg font-bold text-white rounded-full bg-gradient-to-br from-green-500 to-emerald-600">
                           {customerName.charAt(0)}
                         </div>
                         <div>
-                          <h3 className="font-bold text-gray-900 text-lg">{customerName}</h3>
+                          <h3 className="text-lg font-bold text-gray-900">{customerName}</h3>
                           <p className="text-sm text-gray-600">Table {payment.table_id}</p>
                         </div>
                       </div>
                       <span className="px-4 py-1.5 bg-green-500 text-white rounded-full text-sm font-bold shadow-md">
-                        Active
+                        Ongoing
                       </span>
                     </div>
 
-                    <div className="space-y-2 mb-3">
+                  <div className="mb-3 space-y-2">
                       <div className="flex items-center gap-2 text-sm text-gray-700">
                         <Clock size={16} className="text-green-600" />
                         <span className="font-semibold">{formatTime(payment.start_time)} - {endTime}</span>
                       </div>
                       {payment.extension > 0 && (
-                        <div className="flex items-center gap-2 bg-blue-50 p-2 rounded-lg border border-blue-200">
+                        <div className="flex items-center gap-2 p-2 border border-blue-200 rounded-lg bg-blue-50">
                           <Plus size={14} className="text-blue-600" />
-                          <span className="text-sm text-blue-800 font-semibold">
+                          <span className="text-sm font-semibold text-blue-800">
                             Extension: {payment.extension}h - ₱{extensionPrice}
                           </span>
                         </div>
                       )}
+                      
+                      {/* Payment Status */}
+                      <div className="p-3 border-2 border-green-200 rounded-lg bg-green-50">
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-700">Total Bill:</span>
+                            <span className="font-bold text-gray-900">₱{payment.total_bill || 0}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-700">Amount Paid:</span>
+                            <span className="font-bold text-green-600">
+                              ₱{payment.payment_type === 'Full Payment' 
+                                ? (payment.full_amount || 0)
+                                : payment.payment_type === 'Half Payment'
+                                ? (payment.half_amount || 0)
+                                : (payment.partial_amount || 0)
+                              }
+                            </span>
+                          </div>
+                          {(() => {
+                            const totalBill = payment.total_bill || 0;
+                            const amountPaid = payment.payment_type === 'Full Payment' 
+                              ? (payment.full_amount || 0)
+                              : payment.payment_type === 'Half Payment'
+                              ? (payment.half_amount || 0)
+                              : (payment.partial_amount || 0);
+                            const remaining = totalBill - amountPaid;
+                            
+                            if (remaining > 0) {
+                              return (
+                                <div className="pt-2 mt-2 border-t border-green-300">
+                                  <div className="flex justify-between text-sm">
+                                    <span className="font-semibold text-orange-700">Remaining:</span>
+                                    <span className="font-bold text-orange-600">₱{remaining}</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 mb-2">
-                      <button
-                        onClick={() => handleViewDetails(payment)}
-                        className="px-3 py-2 bg-white border-2 border-green-300 text-green-700 rounded-lg hover:bg-green-50 transition-all font-semibold text-sm flex items-center justify-center gap-2"
-                      >
-                        <Eye size={16} />
-                        View
-                      </button>
-                      <button
-                        onClick={() => handleExtensionClick(payment)}
-                        className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all font-semibold text-sm flex items-center justify-center gap-2"
-                      >
-                        <Plus size={16} />
-                        Extend
-                      </button>
-                    </div>
+<div className="grid grid-cols-2 gap-2 mb-2">
+  <button
+    onClick={() => handleViewDetails(payment)}
+    className="flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-orange-700 transition-all bg-white border-2 border-orange-300 rounded-lg hover:bg-orange-50"
+  >
+    <Eye size={16} />
+    View
+  </button>
+  <button
+    onClick={() => handleExtensionClick(payment)}
+    className="flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-white transition-all bg-blue-500 rounded-lg hover:bg-blue-600"
+  >
+    <Plus size={16} />
+    Extend
+  </button>
+</div>
+<div className="grid grid-cols-2 gap-2">
+
+</div>
                     <button
                       onClick={() => handleEndSession(payment.id)}
-                      className="w-full px-4 py-2 bg-gradient-to-r from-red-500 to-pink-500 text-white rounded-lg hover:from-red-600 hover:to-pink-600 transition-all font-semibold text-sm shadow-md"
+                      className="w-full px-4 py-2 text-sm font-semibold text-white transition-all rounded-lg shadow-md bg-gradient-to-r from-red-500 to-pink-500 hover:from-red-600 hover:to-pink-600"
                     >
                       End Session
                     </button>
@@ -905,18 +1043,18 @@ const handleEndSession = async (id) => {
                 );
               })
             ) : (
-              <div className="text-center py-12">
-                <CheckCircle size={48} className="text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500 font-semibold">No active sessions</p>
+              <div className="py-12 text-center">
+                <CheckCircle size={48} className="mx-auto mb-3 text-gray-300" />
+                <p className="font-semibold text-gray-500">No active sessions</p>
               </div>
             )}
           </div>
         </div>
 
         {/* Completed */}
-        <div className="bg-white rounded-2xl shadow-xl p-6 border-2 border-gray-100">
+        <div className="p-6 bg-white border-2 border-gray-100 shadow-xl rounded-2xl">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 bg-gradient-to-br from-gray-400 to-gray-500 rounded-xl flex items-center justify-center">
+            <div className="flex items-center justify-center w-12 h-12 bg-gradient-to-br from-gray-400 to-gray-500 rounded-xl">
               <CheckCircle className="text-white" size={24} />
             </div>
             <div>
@@ -932,14 +1070,14 @@ const handleEndSession = async (id) => {
                 const isSynced = syncedPayments.includes(payment.id); // ✅ DITO!
 
                 return (
-                  <div key={payment.id} className="bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl p-5 border-2 border-gray-200 hover:shadow-lg transition-all">
+                  <div key={payment.id} className="p-5 transition-all border-2 border-gray-200 bg-gradient-to-r from-gray-50 to-gray-100 rounded-xl hover:shadow-lg">
                     <div className="flex items-start justify-between mb-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 bg-gradient-to-br from-gray-500 to-gray-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
+                        <div className="flex items-center justify-center w-12 h-12 text-lg font-bold text-white rounded-full bg-gradient-to-br from-gray-500 to-gray-600">
                           {customerName.charAt(0)}
                         </div>
                         <div>
-                          <h3 className="font-bold text-gray-900 text-lg">{customerName}</h3>
+                          <h3 className="text-lg font-bold text-gray-900">{customerName}</h3>
                           <p className="text-sm text-gray-600">Table {payment.table_id}</p>
                         </div>
                       </div>
@@ -948,7 +1086,7 @@ const handleEndSession = async (id) => {
                       </span>
                     </div>
 
-                    <div className="space-y-1 mb-3">
+                    <div className="mb-3 space-y-1">
                       <p className="text-sm text-gray-700">
                         <span className="font-semibold">Date:</span> {formatDate(payment.reservation_date)}
                       </p>
@@ -960,7 +1098,7 @@ const handleEndSession = async (id) => {
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={() => handleViewDetails(payment)}
-                        className="px-3 py-2 bg-white border-2 border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-all font-semibold text-sm flex items-center justify-center gap-2"
+                        className="flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-gray-700 transition-all bg-white border-2 border-gray-300 rounded-lg hover:bg-gray-50"
                       >
                         <Eye size={16} />
                         View
@@ -981,9 +1119,9 @@ const handleEndSession = async (id) => {
                 );
               })
             ) : (
-              <div className="text-center py-12">
-                <CheckCircle size={48} className="text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500 font-semibold">No completed sessions</p>
+              <div className="py-12 text-center">
+                <CheckCircle size={48} className="mx-auto mb-3 text-gray-300" />
+                <p className="font-semibold text-gray-500">No completed sessions</p>
               </div>
             )}
           </div>
@@ -992,10 +1130,10 @@ const handleEndSession = async (id) => {
 
       {/* Extension Modal */}
       {showExtensionModal && selectedPayment && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full">
-            <div className="bg-gradient-to-r from-blue-500 to-indigo-500 p-6 text-white">
-              <h3 className="text-2xl font-bold mb-1">Add Extension</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
+          <div className="w-full max-w-md bg-white shadow-2xl rounded-2xl">
+            <div className="p-6 text-white bg-gradient-to-r from-blue-500 to-indigo-500">
+              <h3 className="mb-1 text-2xl font-bold">Add Extension</h3>
               <p className="text-blue-100">
                 {`${selectedPayment.accounts?.customer?.first_name || ''} ${selectedPayment.accounts?.customer?.last_name || ''}`.trim() || 'N/A'} - Table {selectedPayment.table_id}
               </p>
@@ -1003,31 +1141,31 @@ const handleEndSession = async (id) => {
 
             <div className="p-6">
               <div className="space-y-4">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Billiard Type</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Billiard Type</p>
                   <p className="font-bold text-gray-900 capitalize">{selectedPayment.billiard_type || 'Standard'}</p>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Current Duration</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Current Duration</p>
                   <p className="font-bold text-gray-900">{selectedPayment.duration} hours</p>
                 </div>
 
                 {selectedPayment.extension > 0 && (
-                  <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-200">
-                    <p className="text-sm text-blue-600 mb-1">Current Extension</p>
+                  <div className="p-4 border-2 border-blue-200 rounded-lg bg-blue-50">
+                    <p className="mb-1 text-sm text-blue-600">Current Extension</p>
                     <p className="font-bold text-blue-900">{selectedPayment.extension} hours</p>
                   </div>
                 )}
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  <label className="block mb-2 text-sm font-semibold text-gray-700">
                     Select Extension
                   </label>
                   <select
                     value={selectedExtension}
                     onChange={(e) => setSelectedExtension(e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm font-semibold"
+                    className="w-full px-4 py-3 text-sm font-semibold border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
                     <option value="">Choose extension hours...</option>
                     {getAvailableExtensions(selectedPayment.billiard_type).map((ext) => (
@@ -1039,8 +1177,8 @@ const handleEndSession = async (id) => {
                 </div>
 
                 {selectedExtension && (
-                  <div className="bg-indigo-50 rounded-lg p-4 border-2 border-indigo-200">
-                    <p className="text-sm text-indigo-600 mb-2">New Total</p>
+                  <div className="p-4 border-2 border-indigo-200 rounded-lg bg-indigo-50">
+                    <p className="mb-2 text-sm text-indigo-600">New Total</p>
                     <div className="space-y-1">
                       <p className="text-sm text-gray-700">
                         <span className="font-semibold">Duration:</span> {selectedPayment.duration + parseFloat(extensions.find(e => e.id === parseInt(selectedExtension))?.extension_hours || 0)} hours
@@ -1059,22 +1197,16 @@ const handleEndSession = async (id) => {
                     setShowExtensionModal(false);
                     setSelectedPayment(null);
                   }}
-                  className="flex-1 px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-all font-semibold"
+                  className="flex-1 px-4 py-3 font-semibold text-gray-700 transition-all bg-gray-200 rounded-lg hover:bg-gray-300"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleExtensionSubmit}
-                  className="flex-1 px-4 py-3 bg-gradient-to-r from-blue-500 to-indigo-500 text-white rounded-lg hover:from-blue-600 hover:to-indigo-600 transition-all font-semibold shadow-md"
+                  className="flex-1 px-4 py-3 font-semibold text-white transition-all rounded-lg shadow-md bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600"
                 >
                   Add Extension
                 </button>
-              </div>
-
-              <div className="mt-4 bg-yellow-50 border-2 border-yellow-200 rounded-lg p-3">
-                <p className="text-sm text-yellow-800 font-semibold">
-                  ⚠️ Note: Status will change to Pending after adding extension
-                </p>
               </div>
             </div>
           </div>
@@ -1083,50 +1215,50 @@ const handleEndSession = async (id) => {
 
       {/* Confirm Payment Modal */}
       {showConfirmModal && selectedPayment && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full">
-            <div className="bg-gradient-to-r from-green-500 to-emerald-500 p-6 text-white">
-              <h3 className="text-2xl font-bold mb-1">Confirm Payment</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
+          <div className="w-full max-w-md bg-white shadow-2xl rounded-2xl">
+            <div className="p-6 text-white bg-gradient-to-r from-green-500 to-emerald-500">
+              <h3 className="mb-1 text-2xl font-bold">Confirm Payment</h3>
               <p className="text-green-100">Reference #{selectedPayment.id}</p>
             </div>
 
             <div className="p-6">
               <div className="space-y-4">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Billiard Type</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Billiard Type</p>
                   <p className="font-bold text-gray-900 capitalize">{selectedPayment.billiard_type || 'Standard'}</p>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Payment Type</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Payment Type</p>
                   <p className="font-bold text-gray-900 capitalize">{selectedPayment.payment_type || 'N/A'}</p>
                 </div>
 
                 {selectedPayment.extension > 0 && (
-                  <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-200">
-                    <p className="text-sm text-blue-600 mb-1">Extension</p>
+                  <div className="p-4 border-2 border-blue-200 rounded-lg bg-blue-50">
+                    <p className="mb-1 text-sm text-blue-600">Extension</p>
                     <p className="font-bold text-blue-900">
                       {selectedPayment.extension} hours - ₱{getExtensionPrice(selectedPayment.billiard_type, selectedPayment.extension)}
                     </p>
                   </div>
                 )}
 
-                <div className="bg-indigo-50 rounded-lg p-4 border-2 border-indigo-200">
-                  <p className="text-sm text-indigo-600 mb-1">Total Bill</p>
+                <div className="p-4 border-2 border-indigo-200 rounded-lg bg-indigo-50">
+                  <p className="mb-1 text-sm text-indigo-600">Total Bill</p>
                   <p className="text-3xl font-bold text-indigo-900">₱{selectedPayment.total_bill || 0}</p>
                 </div>
 
                 {(selectedPayment.payment_type === 'Half Payment' || selectedPayment.payment_type === 'Partial Payment') && (
                   <>
-                    <div className="bg-amber-50 rounded-lg p-4 border-2 border-amber-200">
-                      <p className="text-sm text-amber-600 mb-2 font-semibold">Previous Payment</p>
+                    <div className="p-4 border-2 rounded-lg bg-amber-50 border-amber-200">
+                      <p className="mb-2 text-sm font-semibold text-amber-600">Previous Payment</p>
                       <p className="text-2xl font-bold text-amber-900">
                         ₱{selectedPayment.payment_type === 'Half Payment'
                           ? (selectedPayment.half_amount || 0)
                           : (selectedPayment.partial_amount || 0)
                         }
                       </p>
-                      <p className="text-sm text-amber-700 mt-1">
+                      <p className="mt-1 text-sm text-amber-700">
                         Remaining: ₱{selectedPayment.total_bill - (selectedPayment.payment_type === 'Half Payment'
                           ? (selectedPayment.half_amount || 0)
                           : (selectedPayment.partial_amount || 0)
@@ -1135,7 +1267,7 @@ const handleEndSession = async (id) => {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      <label className="block mb-2 text-sm font-semibold text-gray-700">
                         Enter Payment Amount
                       </label>
                       <input
@@ -1143,23 +1275,23 @@ const handleEndSession = async (id) => {
                         value={paymentAmount}
                         onChange={(e) => setPaymentAmount(e.target.value)}
                         placeholder="Enter amount to pay"
-                        className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-lg font-semibold"
+                        className="w-full px-4 py-3 text-lg font-semibold border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                       />
-                      <p className="text-xs text-gray-500 mt-1">
+                      <p className="mt-1 text-xs text-gray-500">
                         Enter the amount customer is paying now
                       </p>
                     </div>
 
                     {paymentAmount && (
-                      <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200">
-                        <p className="text-sm text-green-600 mb-2 font-semibold">New Total Payment</p>
+                      <div className="p-4 border-2 border-green-200 rounded-lg bg-green-50">
+                        <p className="mb-2 text-sm font-semibold text-green-600">New Total Payment</p>
                         <p className="text-2xl font-bold text-green-900">
                           ₱{(selectedPayment.payment_type === 'Half Payment'
                             ? (selectedPayment.half_amount || 0)
                             : (selectedPayment.partial_amount || 0)
                           ) + parseInt(paymentAmount || 0)}
                         </p>
-                        <p className="text-sm text-green-700 mt-1">
+                        <p className="mt-1 text-sm text-green-700">
                           Still Remaining: ₱{Math.max(0, selectedPayment.total_bill - (
                             (selectedPayment.payment_type === 'Half Payment'
                               ? (selectedPayment.half_amount || 0)
@@ -1174,8 +1306,8 @@ const handleEndSession = async (id) => {
                             : (selectedPayment.partial_amount || 0)
                           ) + parseInt(paymentAmount || 0)
                         )) === 0 && (
-                            <div className="mt-2 p-2 bg-green-100 rounded-lg">
-                              <p className="text-sm text-green-800 font-bold">✅ Payment Complete - Will move to Current!</p>
+                            <div className="p-2 mt-2 bg-green-100 rounded-lg">
+                              <p className="text-sm font-bold text-green-800">✅ Payment Complete - Will move to Current!</p>
                             </div>
                           )}
 
@@ -1185,8 +1317,8 @@ const handleEndSession = async (id) => {
                             : (selectedPayment.partial_amount || 0)
                           ) + parseInt(paymentAmount || 0)
                         )) > 0 && (
-                            <div className="mt-2 p-2 bg-yellow-100 rounded-lg border border-yellow-300">
-                              <p className="text-sm text-yellow-800 font-bold">⚠️ Partial Payment - Will stay in Pending</p>
+                            <div className="p-2 mt-2 bg-yellow-100 border border-yellow-300 rounded-lg">
+                              <p className="text-sm font-bold text-yellow-800">⚠️ Partial Payment - Will stay in Pending</p>
                             </div>
                           )}
                       </div>
@@ -1195,14 +1327,14 @@ const handleEndSession = async (id) => {
                 )}
 
                 {selectedPayment.payment_type === 'Full Payment' && (
-                  <div className="bg-green-50 rounded-lg p-4 border-2 border-green-200">
-                    <p className="text-sm text-green-600 mb-2 font-semibold">✅ Full Payment</p>
-                    <p className="text-sm text-green-700 mb-3">
+                  <div className="p-4 border-2 border-green-200 rounded-lg bg-green-50">
+                    <p className="mb-2 text-sm font-semibold text-green-600">✅ Full Payment</p>
+                    <p className="mb-3 text-sm text-green-700">
                       Customer will pay the full amount
                     </p>
                     <p className="text-3xl font-bold text-green-900">₱{selectedPayment.total_bill}</p>
-                    <div className="mt-3 p-2 bg-green-100 rounded-lg">
-                      <p className="text-sm text-green-800 font-bold">Will move to Current sessions immediately</p>
+                    <div className="p-2 mt-3 bg-green-100 rounded-lg">
+                      <p className="text-sm font-bold text-green-800">Will move to Current sessions immediately</p>
                     </div>
                   </div>
                 )}
@@ -1215,13 +1347,13 @@ const handleEndSession = async (id) => {
                     setSelectedPayment(null);
                     setPaymentAmount('');
                   }}
-                  className="flex-1 px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-all font-semibold"
+                  className="flex-1 px-4 py-3 font-semibold text-gray-700 transition-all bg-gray-200 rounded-lg hover:bg-gray-300"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleConfirmPaymentSubmit}
-                  className="flex-1 px-4 py-3 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition-all font-semibold shadow-md"
+                  className="flex-1 px-4 py-3 font-semibold text-white transition-all rounded-lg shadow-md bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600"
                 >
                   Confirm Payment
                 </button>
@@ -1233,17 +1365,17 @@ const handleEndSession = async (id) => {
 
       {/* View Details Modal */}
       {showModal && selectedPayment && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
           <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="bg-gradient-to-r from-indigo-500 to-purple-500 p-6 text-white">
-              <div className="flex justify-between items-start">
+            <div className="p-6 text-white bg-gradient-to-r from-indigo-500 to-purple-500">
+              <div className="flex items-start justify-between">
                 <div>
-                  <h3 className="text-2xl font-bold mb-1">Payment Details</h3>
+                  <h3 className="mb-1 text-2xl font-bold">Payment Details</h3>
                   <p className="text-indigo-100">Reference #{selectedPayment.id}</p>
                 </div>
                 <button
                   onClick={() => setShowModal(false)}
-                  className="text-white hover:bg-white hover:bg-opacity-20 rounded-lg p-2 transition-all"
+                  className="p-2 text-white transition-all rounded-lg hover:bg-white hover:bg-opacity-20"
                 >
                   <XCircle size={24} />
                 </button>
@@ -1252,43 +1384,43 @@ const handleEndSession = async (id) => {
 
             <div className="p-6">
               <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Customer Name</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Customer Name</p>
                   <p className="font-bold text-gray-900">
                     {`${selectedPayment.accounts?.customer?.first_name || ''} ${selectedPayment.accounts?.customer?.last_name || ''}`.trim() || 'N/A'}
                   </p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Table Number</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Table Number</p>
                   <p className="font-bold text-gray-900">Table {selectedPayment.table_id}</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Date</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Date</p>
                   <p className="font-bold text-gray-900">{formatDate(selectedPayment.reservation_date)}</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Time</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Time</p>
                   <p className="font-bold text-gray-900">{formatTime(selectedPayment.start_time)}</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Duration</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Duration</p>
                   <p className="font-bold text-gray-900">{selectedPayment.duration} hours</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Billiard Type</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Billiard Type</p>
                   <p className="font-bold text-gray-900 capitalize">{selectedPayment.billiard_type || 'Standard'}</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Payment Method</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Payment Method</p>
                   <p className="font-bold text-gray-900">{selectedPayment.paymentMethod || 'N/A'}</p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Payment Type</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Payment Type</p>
                   <p className="font-bold text-gray-900 capitalize">{selectedPayment.payment_type || 'N/A'}</p>
                 </div>
                 {selectedPayment.extension > 0 && (
-                  <div className="bg-blue-50 rounded-lg p-4 col-span-2 border-2 border-blue-200">
-                    <p className="text-sm text-blue-600 mb-1">Extension</p>
+                  <div className="col-span-2 p-4 border-2 border-blue-200 rounded-lg bg-blue-50">
+                    <p className="mb-1 text-sm text-blue-600">Extension</p>
                     <p className="font-bold text-blue-900">
                       {selectedPayment.extension} hours - ₱{getExtensionPrice(selectedPayment.billiard_type, selectedPayment.extension)}
                     </p>
@@ -1297,11 +1429,11 @@ const handleEndSession = async (id) => {
               </div>
 
               {/* Payment Details Section */}
-              <div className="mb-6 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg p-4 border-2 border-purple-200">
-                <h4 className="text-lg font-bold text-gray-900 mb-3">Payment Information</h4>
+              <div className="p-4 mb-6 border-2 border-purple-200 rounded-lg bg-gradient-to-r from-purple-50 to-indigo-50">
+                <h4 className="mb-3 text-lg font-bold text-gray-900">Payment Information</h4>
 
                 <div className="space-y-3">
-                  <div className="flex justify-between items-center">
+                  <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-700">Total Bill:</span>
                     <span className="text-lg font-bold text-gray-900">₱{selectedPayment.total_bill || 0}</span>
                   </div>
@@ -1309,12 +1441,12 @@ const handleEndSession = async (id) => {
                   {selectedPayment.payment_type === 'Full Payment' && (
                     <>
                       <hr className="border-gray-300" />
-                      <div className="flex justify-between items-center">
+                      <div className="flex items-center justify-between">
                         <span className="text-sm text-gray-700">Full Payment:</span>
                         <span className="text-lg font-bold text-green-600">₱{selectedPayment.full_amount || 0}</span>
                       </div>
-                      <div className="bg-green-50 rounded-lg p-2 border border-green-200">
-                        <p className="text-sm text-green-800 font-semibold text-center">
+                      <div className="p-2 border border-green-200 rounded-lg bg-green-50">
+                        <p className="text-sm font-semibold text-center text-green-800">
                           {(selectedPayment.full_amount || 0) >= (selectedPayment.total_bill || 0)
                             ? '✅ Fully Paid'
                             : '⚠️ Not Yet Paid'}
@@ -1326,11 +1458,11 @@ const handleEndSession = async (id) => {
                   {selectedPayment.payment_type === 'Half Payment' && (
                     <>
                       <hr className="border-gray-300" />
-                      <div className="flex justify-between items-center">
+                      <div className="flex items-center justify-between">
                         <span className="text-sm text-gray-700">Amount Paid:</span>
                         <span className="text-lg font-bold text-blue-600">₱{selectedPayment.half_amount || 0}</span>
                       </div>
-                      <div className="flex justify-between items-center">
+                      <div className="flex items-center justify-between">
                         <span className="text-sm text-gray-700">Remaining:</span>
                         <span className="text-lg font-bold text-orange-600">
                           ₱{Math.max(0, (selectedPayment.total_bill || 0) - (selectedPayment.half_amount || 0))}
@@ -1355,11 +1487,11 @@ const handleEndSession = async (id) => {
                   {selectedPayment.payment_type === 'Partial Payment' && (
                     <>
                       <hr className="border-gray-300" />
-                      <div className="flex justify-between items-center">
+                      <div className="flex items-center justify-between">
                         <span className="text-sm text-gray-700">Amount Paid:</span>
                         <span className="text-lg font-bold text-blue-600">₱{selectedPayment.partial_amount || 0}</span>
                       </div>
-                      <div className="flex justify-between items-center">
+                      <div className="flex items-center justify-between">
                         <span className="text-sm text-gray-700">Remaining:</span>
                         <span className="text-lg font-bold text-orange-600">
                           ₱{Math.max(0, (selectedPayment.total_bill || 0) - (selectedPayment.partial_amount || 0))}
@@ -1383,8 +1515,8 @@ const handleEndSession = async (id) => {
                 </div>
               </div>
 
-              <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg p-4 border-2 border-indigo-200">
-                <p className="text-sm text-gray-600 mb-1">Status</p>
+              <div className="p-4 border-2 border-indigo-200 rounded-lg bg-gradient-to-r from-indigo-50 to-purple-50">
+                <p className="mb-1 text-sm text-gray-600">Status</p>
                 <p className="text-2xl font-bold text-indigo-600 capitalize">{selectedPayment.status}</p>
               </div>
             </div>
@@ -1393,34 +1525,34 @@ const handleEndSession = async (id) => {
       )}
 
       {showSyncModal && selectedPayment && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full">
-            <div className="bg-gradient-to-r from-green-500 to-emerald-500 p-6 text-white">
-              <h3 className="text-2xl font-bold mb-1">Sync Payment</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
+          <div className="w-full max-w-md bg-white shadow-2xl rounded-2xl">
+            <div className="p-6 text-white bg-gradient-to-r from-green-500 to-emerald-500">
+              <h3 className="mb-1 text-2xl font-bold">Sync Payment</h3>
               <p className="text-green-100">Reference #{selectedPayment.id}</p>
             </div>
 
             <div className="p-6">
               <div className="space-y-4">
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Customer Name</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Customer Name</p>
                   <p className="font-bold text-gray-900">
                     {`${selectedPayment.accounts?.customer?.first_name || ''} ${selectedPayment.accounts?.customer?.last_name || ''}`.trim() || 'N/A'}
                   </p>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <p className="text-sm text-gray-600 mb-1">Table Number</p>
+                <div className="p-4 rounded-lg bg-gray-50">
+                  <p className="mb-1 text-sm text-gray-600">Table Number</p>
                   <p className="font-bold text-gray-900">Table {selectedPayment.table_id}</p>
                 </div>
 
-                <div className="bg-indigo-50 rounded-lg p-4 border-2 border-indigo-200">
-                  <p className="text-sm text-indigo-600 mb-1">Total Amount</p>
+                <div className="p-4 border-2 border-indigo-200 rounded-lg bg-indigo-50">
+                  <p className="mb-1 text-sm text-indigo-600">Total Amount</p>
                   <p className="text-3xl font-bold text-indigo-900">₱{selectedPayment.total_bill || 0}</p>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  <label className="block mb-2 text-sm font-semibold text-gray-700">
                     Reference Number *
                   </label>
                   <input
@@ -1428,9 +1560,9 @@ const handleEndSession = async (id) => {
                     value={referenceNumber}
                     onChange={(e) => setReferenceNumber(e.target.value)}
                     placeholder="Enter reference number"
-                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-lg font-semibold"
+                    className="w-full px-4 py-3 text-lg font-semibold border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                   />
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="mt-1 text-xs text-gray-500">
                     Enter a unique reference number for this payment
                   </p>
                 </div>
@@ -1443,14 +1575,14 @@ const handleEndSession = async (id) => {
                     setSelectedPayment(null);
                     setReferenceNumber('');
                   }}
-                  className="flex-1 px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-all font-semibold"
+                  className="flex-1 px-4 py-3 font-semibold text-gray-700 transition-all bg-gray-200 rounded-lg hover:bg-gray-300"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSyncSubmit}
                   disabled={syncing}
-                  className="flex-1 px-4 py-3 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:from-green-600 hover:to-emerald-600 transition-all font-semibold shadow-md disabled:opacity-50"
+                  className="flex-1 px-4 py-3 font-semibold text-white transition-all rounded-lg shadow-md bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 disabled:opacity-50"
                 >
                   {syncing ? 'Syncing...' : 'Sync Payment'}
                 </button>
