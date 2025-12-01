@@ -166,46 +166,55 @@ export default function QRCheckInPage() {
 
 const onScanSuccess = (decodedText) => {
     const cleanedText = decodedText.trim();
+    console.log("======================");
     console.log("📱 RAW QR SCANNED:", cleanedText);
+    console.log("======================");
     
     let reservationNumber = null;
     
-    // Try to parse as JSON
+    // STEP 1: Try to parse as JSON first
     try {
       const parsed = JSON.parse(cleanedText);
-      console.log("✅ PARSED JSON:", parsed);
+      console.log("✅ SUCCESS: Parsed as JSON");
+      console.log("📦 JSON Object:", parsed);
       
-      // Check for reservationNo (camelCase)
+      // Look for reservationNo (camelCase)
       if (parsed.reservationNo) {
-        reservationNumber = parsed.reservationNo;
-        console.log("🎯 FOUND reservationNo:", reservationNumber);
+        reservationNumber = String(parsed.reservationNo).trim();
+        console.log("🎯 EXTRACTED: reservationNo =", reservationNumber);
       }
-      // Check for reservation_no (snake_case)
+      // Look for reservation_no (snake_case)
       else if (parsed.reservation_no) {
-        reservationNumber = parsed.reservation_no;
-        console.log("🎯 FOUND reservation_no:", reservationNumber);
+        reservationNumber = String(parsed.reservation_no).trim();
+        console.log("🎯 EXTRACTED: reservation_no =", reservationNumber);
+      }
+      else {
+        console.log("⚠️ JSON has no reservationNo field!");
       }
     } catch (e) {
-      // Not JSON, treat as plain text
-      console.log("ℹ️ NOT JSON - using as plain text");
+      // STEP 2: Not JSON, use the text as-is
+      console.log("ℹ️ NOT JSON - treating as plain text");
       reservationNumber = cleanedText;
     }
     
-    // Search using the extracted reservation number
+    // STEP 3: Search for the reservation
     if (reservationNumber) {
+      console.log("======================");
       console.log("🔍 SEARCHING FOR:", reservationNumber);
+      console.log("======================");
       handleSearch(reservationNumber);
-      stopScanner();
     } else {
-      console.error("❌ No reservation number found in QR code");
+      console.log("❌ ERROR: No reservation number to search!");
       Swal.fire({
         icon: 'error',
         title: 'Invalid QR Code',
-        text: 'QR code does not contain a valid reservation number',
+        html: `<p>Cannot find reservation number in QR code.</p>
+               <p class="text-sm mt-2">Scanned: <code>${cleanedText}</code></p>`,
         confirmButtonColor: '#3085d6'
       });
-      stopScanner();
     }
+    
+    stopScanner();
   };
   const onScanError = (error) => {
     // Silent - normal scanning errors
