@@ -165,27 +165,47 @@ export default function QRCheckInPage() {
   };
 
 const onScanSuccess = (decodedText) => {
-    // Clean and trim the decoded text
     const cleanedText = decodedText.trim();
-    console.log("QR Code Scanned:", cleanedText);
+    console.log("📱 RAW QR SCANNED:", cleanedText);
     
-    // Try to parse as JSON first (if QR contains JSON with reservationNo)
+    let reservationNumber = null;
+    
+    // Try to parse as JSON
     try {
       const parsed = JSON.parse(cleanedText);
+      console.log("✅ PARSED JSON:", parsed);
+      
+      // Check for reservationNo (camelCase)
       if (parsed.reservationNo) {
-        console.log("Parsed JSON - Reservation No:", parsed.reservationNo);
-        handleSearch(parsed.reservationNo);
-        stopScanner();
-        return;
+        reservationNumber = parsed.reservationNo;
+        console.log("🎯 FOUND reservationNo:", reservationNumber);
+      }
+      // Check for reservation_no (snake_case)
+      else if (parsed.reservation_no) {
+        reservationNumber = parsed.reservation_no;
+        console.log("🎯 FOUND reservation_no:", reservationNumber);
       }
     } catch (e) {
       // Not JSON, treat as plain text
-      console.log("Plain text QR code");
+      console.log("ℹ️ NOT JSON - using as plain text");
+      reservationNumber = cleanedText;
     }
     
-    // If not JSON or no reservationNo field, search as-is
-    handleSearch(cleanedText);
-    stopScanner();
+    // Search using the extracted reservation number
+    if (reservationNumber) {
+      console.log("🔍 SEARCHING FOR:", reservationNumber);
+      handleSearch(reservationNumber);
+      stopScanner();
+    } else {
+      console.error("❌ No reservation number found in QR code");
+      Swal.fire({
+        icon: 'error',
+        title: 'Invalid QR Code',
+        text: 'QR code does not contain a valid reservation number',
+        confirmButtonColor: '#3085d6'
+      });
+      stopScanner();
+    }
   };
   const onScanError = (error) => {
     // Silent - normal scanning errors
