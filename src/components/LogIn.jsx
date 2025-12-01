@@ -57,7 +57,7 @@ function Login({ isOpen, onClose, onLoginSuccess, onSwitchToRegister }) {
 
         setTimeout(() => {
           onClose();
-          if (onLoginSuccess) onLoginSuccess("superadmin");
+          if (onLoginSuccess) onLoginSuccess(sessionData);
         }, 1800);
         return; // ⛔ Stop here — no need to check database
       }
@@ -113,7 +113,7 @@ function Login({ isOpen, onClose, onLoginSuccess, onSwitchToRegister }) {
 
       setTimeout(() => {
         onClose();
-        if (onLoginSuccess) onLoginSuccess(accountData.role);
+        if (onLoginSuccess) onLoginSuccess(sessionData);
       }, 1800);
     } catch (err) {
       console.error("Login error:", err);
@@ -158,7 +158,7 @@ function Login({ isOpen, onClose, onLoginSuccess, onSwitchToRegister }) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              placeholder="Enter your email or SUPERADMIN"
+              placeholder="Enter your email"
               required
             />
           </div>
@@ -173,7 +173,7 @@ function Login({ isOpen, onClose, onLoginSuccess, onSwitchToRegister }) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                placeholder="Enter your password or SUPERADMIN"
+                placeholder="Enter your password"
                 required
               />
               <button
