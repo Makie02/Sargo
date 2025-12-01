@@ -131,20 +131,44 @@ export default function QRCheckInPage() {
 
   const fetchReservations = async () => {
     try {
+      // FIRST: Get ALL reservations to see what's in the database
+      const { data: allData, error: allError } = await supabase
+        .from('reservation')
+        .select('*');
+
+      console.log("=== ALL RESERVATIONS IN DATABASE ===");
+      console.log("Total count:", allData?.length || 0);
+      console.log("All reservation numbers:", allData?.map(r => `${r.reservation_no} (status: ${r.status})`) || []);
+
+      // SECOND: Get only pending and approved
       const { data, error } = await supabase
         .from('reservation')
         .select('*')
         .in('status', ['pending', 'approved']);
 
       if (error) throw error;
+      
+      console.log("=== FILTERED (pending/approved) ===");
+      console.log("Filtered count:", data?.length || 0);
+      console.log("Filtered reservation numbers:", data?.map(r => `${r.reservation_no} (status: ${r.status})`) || []);
+      
       setReservations(data || []);
     } catch (err) {
       console.error('Error fetching reservations:', err);
+      Swal.fire({
+        icon: 'error',
+        title: 'Database Error',
+        text: 'Unable to fetch reservations. Please refresh the page.',
+        confirmButtonColor: '#3085d6'
+      });
     }
   };
 
   const onScanSuccess = (decodedText) => {
-    handleSearch(decodedText);
+    // Clean and trim the decoded text
+    const cleanedText = decodedText.trim();
+    console.log("QR Code Scanned:", cleanedText);
+    handleSearch(cleanedText);
     stopScanner();
   };
 
@@ -182,17 +206,65 @@ export default function QRCheckInPage() {
     const searchTerm = String(query).trim();
     if (!searchTerm) return;
 
-    const found = reservations.find(r => r.reservation_no === searchTerm);
+    console.log("=== SEARCHING ===");
+    console.log("Search term:", searchTerm);
+    console.log("Total reservations loaded:", reservations.length);
+
+    // Try exact match first (case sensitive)
+    let found = reservations.find(r => String(r.reservation_no).trim() === searchTerm);
+    
+    console.log("Exact match result:", found ? "FOUND" : "NOT FOUND");
+
+    // If not found, try case-insensitive match
+    if (!found) {
+      found = reservations.find(r => String(r.reservation_no).trim().toLowerCase() === searchTerm.toLowerCase());
+      console.log("Case-insensitive match result:", found ? "FOUND" : "NOT FOUND");
+    }
+
+    // If still not found, try partial match
+    if (!found) {
+      found = reservations.find(r => String(r.reservation_no).trim().toLowerCase().includes(searchTerm.toLowerCase()));
+      console.log("Partial match result:", found ? "FOUND" : "NOT FOUND");
+    }
     
     if (!found) {
-      return Swal.fire("Not Found", "Reservation does not exist.", "error");
+      console.log("=== NOT FOUND - Available reservations: ===");
+      reservations.forEach(r => {
+        console.log(`- ${r.reservation_no} (ID: ${r.id}, Status: ${r.status})`);
+      });
+
+      return Swal.fire({
+        icon: "error",
+        title: "Not Found",
+        html: `<p>Reservation <strong>${searchTerm}</strong> does not exist or is not pending/approved.</p>
+               <p class="text-sm text-gray-600 mt-2">Please check the console (F12) for available reservations.</p>`,
+        confirmButtonColor: '#3085d6'
+      });
     }
+
+    console.log("=== FOUND ===");
+    console.log("Reservation:", found);
 
     if (found.status !== "pending" && found.status !== "approved") {
-      return Swal.fire("Invalid Status", `Reservation is already: ${found.status}`, "error");
+      return Swal.fire({
+        icon: "error",
+        title: "Invalid Status",
+        text: `Reservation is already: ${found.status}`,
+        confirmButtonColor: '#3085d6'
+      });
     }
 
+    // Show success message before displaying reservation
+    await Swal.fire({
+      icon: 'success',
+      title: 'Reservation Found!',
+      text: `${found.reservation_no}`,
+      timer: 1500,
+      showConfirmButton: false
+    });
+
     setSelectedReservation(found);
+    setSearchQuery(''); // Clear search query after successful search
   };
 
   const handleCheckInClick = () => {
