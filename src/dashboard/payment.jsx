@@ -209,7 +209,7 @@ const reservationInserts = reservations.map(reservation => {
     billiard_type: reservation.table.info.billiard_type,
     start_time: reservation.time,
     time_end: reservation.timeEnd,
-    duration: reservation.duration.id,
+   duration: reservation.duration.hours,
     status: 'pending',
     paymentMethod: formData.paymentMethod,
     payment_type: paymentTypeLabel, // Add this line
@@ -751,7 +751,7 @@ const reservationInserts = reservations.map(reservation => {
                 <div style={{
                   width: '16px',
                   height: '16px',
-                  border: '2px solid white', 
+                  border: '2px solid white',
                   borderTop: '2px solid transparent',
                   borderRadius: '50%',
                   animation: 'spin 1s linear infinite'
