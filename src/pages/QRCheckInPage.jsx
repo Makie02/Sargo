@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { QrCode, CheckCircle, X, AlertCircle, FileImage, FolderOpen } from 'lucide-react';
+import { QrCode, CheckCircle, X, AlertCircle, FileImage, FolderOpen, Search } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { supabase } from '../lib/supabaseClient';
 import Swal from 'sweetalert2';
@@ -9,6 +9,7 @@ import jsPDF from 'jspdf';
 export default function QRCheckInPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [reservations, setReservations] = useState([]);
+  const [filteredReservations, setFilteredReservations] = useState([]);
   const [selectedReservation, setSelectedReservation] = useState(null);
   const [confirmationModal, setConfirmationModal] = useState(false);
   const [generatedRefNo, setGeneratedRefNo] = useState(null);
@@ -18,13 +19,41 @@ export default function QRCheckInPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [cameraDevices, setCameraDevices] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const html5QrCodeRef = useRef(null);
   const cardRef = useRef(null);
+  const searchRef = useRef(null);
 
   // Fetch reservations on load
   useEffect(() => {
     fetchReservations();
     checkCameras();
+  }, []);
+
+  // Real-time search filter
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      const filtered = reservations.filter(r => 
+        r.reservation_no?.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+      setFilteredReservations(filtered);
+      setShowSuggestions(filtered.length > 0);
+    } else {
+      setFilteredReservations([]);
+      setShowSuggestions(false);
+    }
+  }, [searchQuery, reservations]);
+
+  // Click outside to close suggestions
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (searchRef.current && !searchRef.current.contains(event.target)) {
+        setShowSuggestions(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   // Check available cameras
@@ -33,7 +62,6 @@ export default function QRCheckInPage() {
       const devices = await Html5Qrcode.getCameras();
       setCameraDevices(devices);
       if (devices && devices.length > 0) {
-        // Default to back camera if available, otherwise first camera
         const backCamera = devices.find(d => d.label.toLowerCase().includes('back')) || devices[0];
         setSelectedCamera(backCamera.id);
       }
@@ -46,7 +74,6 @@ export default function QRCheckInPage() {
   useEffect(() => {
     const startScanner = async () => {
       if (scannerActive && !isScanning) {
-        // Check if camera is available
         if (cameraDevices.length === 0) {
           Swal.fire({
             icon: 'error',
@@ -72,7 +99,6 @@ export default function QRCheckInPage() {
           const html5QrCode = new Html5Qrcode("qr-reader");
           html5QrCodeRef.current = html5QrCode;
 
-          // Use selected camera or default
           const cameraId = selectedCamera || cameraDevices[0].id;
 
           await html5QrCode.start(
@@ -129,121 +155,25 @@ export default function QRCheckInPage() {
     };
   }, [scannerActive]);
 
-  const fetchReservations = async () => {
+const fetchReservations = async () => {
     try {
-      // FIRST: Get ALL reservations to see what's in the database
-      const { data: allData, error: allError } = await supabase
-        .from('reservation')
-        .select('*');
-
-      console.log("=== ALL RESERVATIONS IN DATABASE ===");
-      console.log("Total count:", allData?.length || 0);
-      console.log("All reservation numbers:", allData?.map(r => `${r.reservation_no} (status: ${r.status})`) || []);
-
-      // SECOND: Get only pending and approved
       const { data, error } = await supabase
         .from('reservation')
-        .select('*')
-        .in('status', ['pending', 'approved']);
+        .select('*');
+        // Remove the .in('status', ['pending', 'approved']) to get all reservations
 
       if (error) throw error;
-      
-      console.log("=== FILTERED (pending/approved) ===");
-      console.log("Filtered count:", data?.length || 0);
-      console.log("Filtered reservation numbers:", data?.map(r => `${r.reservation_no} (status: ${r.status})`) || []);
-      
       setReservations(data || []);
     } catch (err) {
       console.error('Error fetching reservations:', err);
-      Swal.fire({
-        icon: 'error',
-        title: 'Database Error',
-        text: 'Unable to fetch reservations. Please refresh the page.',
-        confirmButtonColor: '#3085d6'
-      });
     }
   };
 
-const [isProcessing, setIsProcessing] = useState(false);
-const scanTimeoutRef = useRef(null);
-
-const onScanSuccess = (decodedText) => {
-    // STOP AGAD SCANNER + CHECK IF PROCESSING PA
-    if (isProcessing) {
-      console.log("⏳ STILL PROCESSING - IGNORING SCAN");
-      return;
-    }
-    
+  const onScanSuccess = (decodedText) => {
+    handleSearch(decodedText);
     stopScanner();
-    setIsProcessing(true);
-    
-    const cleanedText = decodedText.trim();
-    console.log("======================");
-    console.log("📱 RAW QR SCANNED:", cleanedText);
-    console.log("======================");
-    
-    let reservationNumber = null;
-    
-    // STEP 1: Try to parse as JSON first
-    try {
-      const parsed = JSON.parse(cleanedText);
-      console.log("✅ SUCCESS: Parsed as JSON");
-      console.log("📦 JSON Object:", parsed);
-      
-      // Look for reservationNo (camelCase)
-      if (parsed.reservationNo) {
-        reservationNumber = String(parsed.reservationNo).trim();
-        console.log("🎯 EXTRACTED: reservationNo =", reservationNumber);
-      }
-      // Look for reservation_no (snake_case)
-      else if (parsed.reservation_no) {
-        reservationNumber = String(parsed.reservation_no).trim();
-        console.log("🎯 EXTRACTED: reservation_no =", reservationNumber);
-      }
-      else {
-        console.log("⚠️ JSON has no reservationNo field!");
-      }
-    } catch (e) {
-      // STEP 2: Not JSON, use the text as-is
-      console.log("ℹ️ NOT JSON - treating as plain text");
-      reservationNumber = cleanedText;
-    }
-    
-    // STEP 3: Search for the reservation
-    if (reservationNumber) {
-      console.log("======================");
-      console.log("🔍 SEARCHING FOR:", reservationNumber);
-      console.log("======================");
-      handleSearch(reservationNumber);
-      
-      // DELAY 2 SECONDS BAGO PWEDE ULIT MAG-SCAN
-      scanTimeoutRef.current = setTimeout(() => {
-        setIsProcessing(false);
-        console.log("✅ READY TO SCAN AGAIN");
-      }, 2000);
-      
-    } else {
-      console.log("❌ ERROR: No reservation number to search!");
-      Swal.fire({
-        icon: 'error',
-        title: 'Invalid QR Code',
-        html: `<p>Cannot find reservation number in QR code.</p>
-               <p class="text-sm mt-2">Scanned: <code>${cleanedText}</code></p>`,
-        confirmButtonColor: '#3085d6'
-      }).then(() => {
-        setIsProcessing(false);
-      });
-    }
-};
-
-// CLEANUP TIMEOUT PAG UNMOUNT
-useEffect(() => {
-  return () => {
-    if (scanTimeoutRef.current) {
-      clearTimeout(scanTimeoutRef.current);
-    }
   };
-}, []);
+
   const onScanError = (error) => {
     // Silent - normal scanning errors
   };
@@ -274,69 +204,101 @@ useEffect(() => {
     }
   };
 
-  const handleSearch = async (query = searchQuery) => {
+const handleSearch = async (query = searchQuery) => {
     const searchTerm = String(query).trim();
     if (!searchTerm) return;
 
-    console.log("=== SEARCHING ===");
-    console.log("Search term:", searchTerm);
-    console.log("Total reservations loaded:", reservations.length);
-
-    // Try exact match first (case sensitive)
-    let found = reservations.find(r => String(r.reservation_no).trim() === searchTerm);
-    
-    console.log("Exact match result:", found ? "FOUND" : "NOT FOUND");
-
-    // If not found, try case-insensitive match
-    if (!found) {
-      found = reservations.find(r => String(r.reservation_no).trim().toLowerCase() === searchTerm.toLowerCase());
-      console.log("Case-insensitive match result:", found ? "FOUND" : "NOT FOUND");
-    }
-
-    // If still not found, try partial match
-    if (!found) {
-      found = reservations.find(r => String(r.reservation_no).trim().toLowerCase().includes(searchTerm.toLowerCase()));
-      console.log("Partial match result:", found ? "FOUND" : "NOT FOUND");
-    }
+    const found = reservations.find(r => r.reservation_no === searchTerm);
     
     if (!found) {
-      console.log("=== NOT FOUND - Available reservations: ===");
-      reservations.forEach(r => {
-        console.log(`- ${r.reservation_no} (ID: ${r.id}, Status: ${r.status})`);
-      });
-
-      return Swal.fire({
-        icon: "error",
-        title: "Not Found",
-        html: `<p>Reservation <strong>${searchTerm}</strong> does not exist or is not pending/approved.</p>
-               <p class="text-sm text-gray-600 mt-2">Please check the console (F12) for available reservations.</p>`,
-        confirmButtonColor: '#3085d6'
-      });
+      return Swal.fire("Not Found", "Reservation does not exist.", "error");
     }
 
-    console.log("=== FOUND ===");
-    console.log("Reservation:", found);
+    // Check if status is completed, rescheduled, or ongoing
+    if (found.status === "completed") {
+      const result = await Swal.fire({
+        icon: 'info',
+        title: 'Reservation Completed',
+        text: 'This reservation has already been completed.',
+        showCancelButton: true,
+        confirmButtonText: 'View Details',
+        cancelButtonText: 'Close',
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#6b7280'
+      });
+
+      if (result.isConfirmed) {
+        setSelectedReservation(found);
+        setShowSuggestions(false);
+      }
+      return;
+    }
+
+    if (found.status === "rescheduled") {
+      const result = await Swal.fire({
+        icon: 'info',
+        title: 'Reservation Rescheduled',
+        text: 'This reservation has been rescheduled.',
+        showCancelButton: true,
+        confirmButtonText: 'View Details',
+        cancelButtonText: 'Close',
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#6b7280'
+      });
+
+      if (result.isConfirmed) {
+        setSelectedReservation(found);
+        setShowSuggestions(false);
+      }
+      return;
+    }
+
+    if (found.status === "ongoing") {
+      const result = await Swal.fire({
+        icon: 'info',
+        title: 'Reservation Ongoing',
+        text: 'This reservation is currently ongoing.',
+        showCancelButton: true,
+        confirmButtonText: 'View Details',
+        cancelButtonText: 'Close',
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#6b7280'
+      });
+
+      if (result.isConfirmed) {
+        setSelectedReservation(found);
+        setShowSuggestions(false);
+      }
+      return;
+    }
 
     if (found.status !== "pending" && found.status !== "approved") {
-      return Swal.fire({
-        icon: "error",
-        title: "Invalid Status",
-        text: `Reservation is already: ${found.status}`,
-        confirmButtonColor: '#3085d6'
+      const result = await Swal.fire({
+        icon: 'warning',
+        title: 'Invalid Status',
+        text: `Reservation status: ${found.status}`,
+        showCancelButton: true,
+        confirmButtonText: 'View Details',
+        cancelButtonText: 'Close',
+        confirmButtonColor: '#3085d6',
+        cancelButtonColor: '#6b7280'
       });
+
+      if (result.isConfirmed) {
+        setSelectedReservation(found);
+        setShowSuggestions(false);
+      }
+      return;
     }
 
-    // Show success message before displaying reservation
-    await Swal.fire({
-      icon: 'success',
-      title: 'Reservation Found!',
-      text: `${found.reservation_no}`,
-      timer: 1500,
-      showConfirmButton: false
-    });
-
+    // If pending or approved, show directly without Swal
     setSelectedReservation(found);
-    setSearchQuery(''); // Clear search query after successful search
+    setShowSuggestions(false);
+  };
+  const handleSuggestionClick = (reservation) => {
+    setSearchQuery(reservation.reservation_no);
+    setShowSuggestions(false);
+    handleSearch(reservation.reservation_no);
   };
 
   const handleCheckInClick = () => {
@@ -523,14 +485,44 @@ useEffect(() => {
       <div className="bg-white shadow-xl rounded-2xl p-6 w-[430px] h-[600px]">
         <h1 className="text-2xl font-bold text-gray-800 mb-4">QR Code Verification</h1>
 
-        <div className="rounded-xl overflow-hidden mb-4" style={{ height: '250px' }}>
+        {/* GCash-style QR Scanner */}
+        <div className="rounded-xl overflow-hidden mb-4 relative" style={{ height: '250px' }}>
           {scannerActive ? (
-            <div id="qr-reader" className="w-full h-full"></div>
+            <div className="relative w-full h-full">
+              <div id="qr-reader" className="w-full h-full"></div>
+              {/* GCash-style scanning frame overlay */}
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="relative w-[250px] h-[250px]">
+                    {/* Corner borders - GCash style */}
+                    <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-blue-500 rounded-tl-lg"></div>
+                    <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-blue-500 rounded-tr-lg"></div>
+                    <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-blue-500 rounded-bl-lg"></div>
+                    <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-blue-500 rounded-br-lg"></div>
+                    
+                    {/* Scanning line animation */}
+                    <div className="absolute top-0 left-0 right-0 h-1 bg-blue-500 animate-scan"></div>
+                  </div>
+                </div>
+                
+                {/* Instructions text */}
+                <div className="absolute bottom-4 left-0 right-0 text-center">
+                  <p className="text-white text-sm font-semibold bg-black/60 px-4 py-2 rounded-full inline-block">
+                    Align QR code within frame
+                  </p>
+                </div>
+              </div>
+            </div>
           ) : (
-            <div className="bg-gray-100 rounded-xl p-8 border-2 border-dashed border-gray-300 h-full flex flex-col justify-center items-center">
-              <QrCode size={50} className="text-gray-400" />
-              <p className="text-gray-500 text-sm mt-2">Camera Preview</p>
-              <p className="text-gray-400 text-xs mt-1">Click "Start Scanner" to begin</p>
+            <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-8 border-2 border-dashed border-blue-300 h-full flex flex-col justify-center items-center">
+              <div className="relative">
+                <QrCode size={60} className="text-blue-500" />
+                {/* Decorative scan lines */}
+                <div className="absolute -inset-2 border-2 border-blue-300 rounded-lg opacity-50"></div>
+                <div className="absolute -inset-4 border-2 border-blue-200 rounded-lg opacity-30"></div>
+              </div>
+              <p className="text-blue-700 font-semibold text-base mt-4">Scan QR Code</p>
+              <p className="text-blue-500 text-xs mt-1">Position QR code within frame</p>
             </div>
           )}
         </div>
@@ -538,13 +530,16 @@ useEffect(() => {
         <button
           onClick={toggleScanner}
           disabled={cameraDevices.length === 0}
-          className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition ${
+          className={`w-full px-4 py-3 rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2 ${
             cameraDevices.length === 0
               ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
-              : 'bg-black text-white hover:bg-gray-800'
+              : scannerActive 
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'bg-blue-600 text-white hover:bg-blue-700'
           }`}
         >
-          {scannerActive ? "Stop Camera" : cameraDevices.length === 0 ? "No Camera Detected" : "Start Scanner"}
+          <QrCode size={18} />
+          {scannerActive ? "Stop Scanner" : cameraDevices.length === 0 ? "No Camera Detected" : "Start Scanner"}
         </button>
 
         {cameraDevices.length > 1 && !scannerActive && (
@@ -552,7 +547,7 @@ useEffect(() => {
             <select
               value={selectedCamera || ''}
               onChange={(e) => setSelectedCamera(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm"
+              className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
               {cameraDevices.map((device) => (
                 <option key={device.id} value={device.id}>
@@ -565,21 +560,53 @@ useEffect(() => {
 
         <p className="text-center text-gray-400 text-xs mt-4 mb-2">OR</p>
 
-        <div className="flex gap-2">
-          <input
-            type="text"
-            placeholder="Reservation Number"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyPress={(e) => e.key === "Enter" && handleSearch()}
-            className="flex-1 border p-2 rounded-lg"
-          />
-          <button
-            onClick={() => handleSearch()}
-            className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm hover:bg-gray-800 transition"
-          >
-            Verify
-          </button>
+        {/* Real-time Search with Suggestions */}
+        <div className="relative" ref={searchRef}>
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
+              <input
+                type="text"
+                placeholder="Search reservation number..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyPress={(e) => e.key === "Enter" && handleSearch()}
+                onFocus={() => searchQuery && setShowSuggestions(true)}
+                className="w-full pl-10 pr-4 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+              />
+            </div>
+            <button
+              onClick={() => handleSearch()}
+              className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm hover:bg-gray-800 transition font-semibold"
+            >
+              Verify
+            </button>
+          </div>
+
+          {/* Real-time Suggestions Dropdown */}
+          {showSuggestions && filteredReservations.length > 0 && (
+            <div className="absolute z-10 w-full mt-2 bg-white border-2 border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto">
+              {filteredReservations.map((reservation) => (
+                <div
+                  key={reservation.id}
+                  onClick={() => handleSuggestionClick(reservation)}
+                  className="px-4 py-3 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-b-0 transition-colors"
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="font-semibold text-gray-800">{reservation.reservation_no}</p>
+                      <p className="text-xs text-gray-500">Table {reservation.table_id} • {reservation.reservation_date}</p>
+                    </div>
+                    <span className={`text-xs px-2 py-1 rounded-full font-semibold ${
+                      reservation.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
+                    }`}>
+                      {reservation.status}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -778,6 +805,26 @@ useEffect(() => {
           </div>
         </div>
       )}
+
+      {/* Add CSS for scanning animation */}
+      <style jsx>{`
+        @keyframes scan {
+          0% {
+            top: 0;
+            opacity: 0;
+          }
+          50% {
+            opacity: 1;
+          }
+          100% {
+            top: 100%;
+            opacity: 0;
+          }
+        }
+        .animate-scan {
+          animation: scan 2s ease-in-out infinite;
+        }
+      `}</style>
     </div>
   );
 }
